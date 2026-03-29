@@ -1,12 +1,12 @@
 {
-  "name": "@steipete/claude-code-mcp",
+  "name": "agent-mcp",
   "version": "1.10.12",
-  "description": "Simple MCP server for Claude Code one-shot execution",
+  "description": "Provider-backed MCP server for Claude Code, Codex, and future agent CLIs",
   "author": "Peter Steinberger",
   "license": "MIT",
   "main": "dist/server.js",
   "bin": {
-    "claude-code-mcp": "dist/server.js"
+    "agent-mcp": "dist/server.js"
   },
   "scripts": {
     "build": "tsc",
@@ -34,18 +34,19 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/steipete/claude-code-mcp.git"
+    "url": "git+https://github.com/VanL/agent-mcp.git"
   },
   "keywords": [
     "mcp",
     "model-context-protocol",
     "claude",
+    "codex",
     "ai",
     "llm",
     "tools"
   ],
   "bugs": {
-    "url": "https://github.com/steipete/claude-code-mcp/issues"
+    "url": "https://github.com/VanL/agent-mcp/issues"
   },
-  "homepage": "https://github.com/steipete/claude-code-mcp#readme"
+  "homepage": "https://github.com/VanL/agent-mcp#readme"
 }

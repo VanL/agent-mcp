@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 export function verifyMockExists(binaryName: string): boolean {
-  const mockPath = join('/tmp', 'claude-code-test-mock', binaryName);
+  const mockPath = join('/tmp', 'agent-cli-test-mock', binaryName);
   return existsSync(mockPath);
 }
 

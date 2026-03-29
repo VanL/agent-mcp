@@ -9,109 +9,273 @@ import {
   type ServerResult,
 } from '@modelcontextprotocol/sdk/types.js';
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join, resolve as pathResolve } from 'node:path';
-import * as path from 'path';
-import { readFileSync } from 'node:fs';
+import * as path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { z } from 'zod';
 
 // Server version - update this when releasing new versions
-const SERVER_VERSION = "1.10.12";
+const SERVER_VERSION = '1.10.12';
 
-// Define debugMode globally using const
 const debugMode = process.env.MCP_CLAUDE_DEBUG === 'true';
-
-// Track if this is the first tool use for version printing
 let isFirstToolUse = true;
-
-// Capture server startup time when the module loads
 const serverStartupTime = new Date().toISOString();
+const executionTimeoutMs = 1800000; // 30 minutes
 
-// Dedicated debug logging function
-export function debugLog(message?: any, ...optionalParams: any[]): void {
+const workFolderDescription =
+  'Mandatory when using file operations or referencing any file. The working directory for the CLI execution. Must be an absolute path.';
+
+const toolArgumentsSchema = z.object({
+  prompt: z.string(),
+  workFolder: z.string().optional(),
+});
+
+type ToolArguments = z.infer<typeof toolArgumentsSchema>;
+
+interface SpawnResult {
+  stdout: string;
+  stderr: string;
+}
+
+interface ProviderInvocation {
+  args: string[];
+  outputFile?: string;
+  cleanupDir?: string;
+}
+
+interface AgentProviderConfig {
+  id: string;
+  toolName: string;
+  title: string;
+  displayName: string;
+  recommendedUse: string;
+  cliEnvVar: string;
+  defaultCliCommand: string;
+  preferredCliPaths?: () => string[];
+  preferredCliPathLabel?: string;
+  warnWhenFallingBackToPath?: boolean;
+  promptDescription: string;
+  buildInvocation: (input: { prompt: string; cwd: string }) => ProviderInvocation;
+  extractOutput?: (result: SpawnResult, invocation: ProviderInvocation) => string;
+}
+
+interface AgentProviderRuntime extends AgentProviderConfig {
+  cliCommand: string;
+}
+
+/**
+ * Dedicated debug logging function.
+ */
+export function debugLog(message?: unknown, ...optionalParams: unknown[]): void {
   if (debugMode) {
     console.error(message, ...optionalParams);
   }
 }
 
-/**
- * Determine the Claude CLI command/path.
- * 1. Checks for CLAUDE_CLI_NAME environment variable:
- *    - If absolute path, uses it directly
- *    - If relative path, throws error
- *    - If simple name, continues with path resolution
- * 2. Checks for Claude CLI at the local user path: ~/.claude/local/claude.
- * 3. If not found, defaults to the CLI name (or 'claude'), relying on the system's PATH for lookup.
- */
-export function findClaudeCli(): string {
-  debugLog('[Debug] Attempting to find Claude CLI...');
+function buildToolDescription(provider: AgentProviderConfig): string {
+  return `${provider.title}: Run ${provider.displayName} non-interactively for code, file, Git, shell, and research tasks. Use \`workFolder\` for contextual execution.
 
-  // Check for custom CLI name from environment variable
-  const customCliName = process.env.CLAUDE_CLI_NAME;
+Use this tool when you specifically want ${provider.recommendedUse}.
+
+• File ops: Create, read, edit, move, copy, delete, list, and inspect files
+• Code: Generate, explain, refactor, review, and fix code
+• Git: Stage, commit, branch, push, inspect diffs, and prepare PRs
+• Terminal: Run project commands, tests, linters, and build steps
+• Web: Search or inspect docs when the provider supports it
+
+Prompt tips:
+1. Be concise and explicit for multi-step work.
+2. Set \`workFolder\` to the project root so relative paths resolve correctly.
+3. For analysis-only tasks, explicitly say no file modifications should be made.
+4. Ask for staged or commit-ready changes when you want a Git workflow result.`;
+}
+
+export function resolveCliCommand(provider: AgentProviderConfig): string {
+  debugLog(`[Debug] Attempting to find ${provider.displayName} CLI...`);
+
+  const customCliName = process.env[provider.cliEnvVar];
   if (customCliName) {
-    debugLog(`[Debug] Using custom Claude CLI name from CLAUDE_CLI_NAME: ${customCliName}`);
-    
-    // If it's an absolute path, use it directly
+    debugLog(`[Debug] Using custom ${provider.displayName} CLI from ${provider.cliEnvVar}: ${customCliName}`);
+
     if (path.isAbsolute(customCliName)) {
-      debugLog(`[Debug] CLAUDE_CLI_NAME is an absolute path: ${customCliName}`);
       return customCliName;
     }
-    
-    // If it starts with ~ or ./, reject as relative paths are not allowed
-    if (customCliName.startsWith('./') || customCliName.startsWith('../') || customCliName.includes('/')) {
-      throw new Error(`Invalid CLAUDE_CLI_NAME: Relative paths are not allowed. Use either a simple name (e.g., 'claude') or an absolute path (e.g., '/tmp/claude-test')`);
+
+    if (
+      customCliName.startsWith('./') ||
+      customCliName.startsWith('../') ||
+      customCliName.includes('/')
+    ) {
+      throw new Error(
+        `Invalid ${provider.cliEnvVar}: Relative paths are not allowed. Use either a simple name (e.g., "${provider.defaultCliCommand}") or an absolute path.`,
+      );
+    }
+
+    return customCliName;
+  }
+
+  const preferredCliPaths = provider.preferredCliPaths?.() ?? [];
+  for (const cliPath of preferredCliPaths) {
+    debugLog(`[Debug] Checking for ${provider.displayName} CLI at: ${cliPath}`);
+    if (existsSync(cliPath)) {
+      debugLog(`[Debug] Found ${provider.displayName} CLI at: ${cliPath}`);
+      return cliPath;
     }
   }
-  
-  const cliName = customCliName || 'claude';
 
-  // Try local install path: ~/.claude/local/claude (using the original name for local installs)
-  const userPath = join(homedir(), '.claude', 'local', 'claude');
-  debugLog(`[Debug] Checking for Claude CLI at local user path: ${userPath}`);
-
-  if (existsSync(userPath)) {
-    debugLog(`[Debug] Found Claude CLI at local user path: ${userPath}. Using this path.`);
-    return userPath;
-  } else {
-    debugLog(`[Debug] Claude CLI not found at local user path: ${userPath}.`);
+  if (provider.warnWhenFallingBackToPath && provider.preferredCliPathLabel) {
+    console.warn(
+      `[Warning] ${provider.displayName} CLI not found at ${provider.preferredCliPathLabel}. Falling back to "${provider.defaultCliCommand}" in PATH. Ensure it is installed and accessible.`,
+    );
   }
 
-  // 3. Fallback to CLI name (PATH lookup)
-  debugLog(`[Debug] Falling back to "${cliName}" command name, relying on spawn/PATH lookup.`);
-  console.warn(`[Warning] Claude CLI not found at ~/.claude/local/claude. Falling back to "${cliName}" in PATH. Ensure it is installed and accessible.`);
-  return cliName;
+  return provider.defaultCliCommand;
 }
 
-/**
- * Interface for Claude Code tool arguments
- */
-interface ClaudeCodeArgs {
-  prompt: string;
-  workFolder?: string;
+function parseToolArguments(toolArguments: unknown, toolName: string): ToolArguments {
+  const parsedArguments = toolArgumentsSchema.safeParse(toolArguments);
+  if (parsedArguments.success) {
+    return parsedArguments.data;
+  }
+
+  const primaryIssue = parsedArguments.error.issues[0];
+  const issuePath = primaryIssue?.path?.length ? ` at ${primaryIssue.path.join('.')}` : '';
+  const issueMessage = primaryIssue?.message ?? 'Invalid arguments';
+
+  throw new McpError(ErrorCode.InvalidParams, `Invalid arguments for ${toolName}${issuePath}: ${issueMessage}`);
 }
 
-// Ensure spawnAsync is defined correctly *before* the class
-export async function spawnAsync(command: string, args: string[], options?: { timeout?: number, cwd?: string }): Promise<{ stdout: string; stderr: string }> {
+function resolveWorkingDirectory(workFolder?: string): string {
+  let effectiveCwd = homedir();
+
+  if (!workFolder) {
+    debugLog(`[Debug] No workFolder provided, using default CWD: ${effectiveCwd}`);
+    return effectiveCwd;
+  }
+
+  const resolvedCwd = pathResolve(workFolder);
+  debugLog(`[Debug] Specified workFolder: ${workFolder}, Resolved to: ${resolvedCwd}`);
+
+  if (existsSync(resolvedCwd)) {
+    debugLog(`[Debug] Using workFolder as CWD: ${resolvedCwd}`);
+    return resolvedCwd;
+  }
+
+  debugLog(`[Warning] Specified workFolder does not exist: ${resolvedCwd}. Using default: ${effectiveCwd}`);
+  return effectiveCwd;
+}
+
+function cleanupInvocation(invocation: ProviderInvocation): void {
+  if (!invocation.cleanupDir) {
+    return;
+  }
+
+  try {
+    rmSync(invocation.cleanupDir, { recursive: true, force: true });
+  } catch (error) {
+    debugLog('[Debug] Failed to clean up provider temp directory:', error);
+  }
+}
+
+const claudeProvider: AgentProviderConfig = {
+  id: 'claude',
+  toolName: 'claude_code',
+  title: 'Claude Code Agent',
+  displayName: 'Claude',
+  recommendedUse: 'Claude Code',
+  cliEnvVar: 'CLAUDE_CLI_NAME',
+  defaultCliCommand: 'claude',
+  preferredCliPaths: () => [join(homedir(), '.claude', 'local', 'claude')],
+  preferredCliPathLabel: '~/.claude/local/claude',
+  warnWhenFallingBackToPath: true,
+  promptDescription: 'The detailed natural language prompt for Claude to execute.',
+  buildInvocation: ({ prompt }) => ({
+    args: ['--dangerously-skip-permissions', '-p', prompt],
+  }),
+};
+
+const codexProvider: AgentProviderConfig = {
+  id: 'codex',
+  toolName: 'codex',
+  title: 'Codex Agent',
+  displayName: 'Codex',
+  recommendedUse: 'Codex',
+  cliEnvVar: 'CODEX_CLI_NAME',
+  defaultCliCommand: 'codex',
+  promptDescription: 'The detailed natural language prompt for Codex to execute.',
+  buildInvocation: ({ prompt, cwd }) => {
+    const cleanupDir = mkdtempSync(join(tmpdir(), 'codex-mcp-'));
+    const outputFile = join(cleanupDir, 'last-message.txt');
+
+    return {
+      args: [
+        'exec',
+        '--dangerously-bypass-approvals-and-sandbox',
+        '--skip-git-repo-check',
+        '--color',
+        'never',
+        '-C',
+        cwd,
+        '-o',
+        outputFile,
+        prompt,
+      ],
+      outputFile,
+      cleanupDir,
+    };
+  },
+  extractOutput: ({ stdout }, invocation) => {
+    if (invocation.outputFile && existsSync(invocation.outputFile)) {
+      const lastMessage = readFileSync(invocation.outputFile, 'utf-8');
+      if (lastMessage.trim()) {
+        return lastMessage;
+      }
+    }
+
+    return stdout;
+  },
+};
+
+export const AGENT_PROVIDERS: readonly AgentProviderConfig[] = [claudeProvider, codexProvider];
+
+export function findClaudeCli(): string {
+  return resolveCliCommand(claudeProvider);
+}
+
+export function findCodexCli(): string {
+  return resolveCliCommand(codexProvider);
+}
+
+// Ensure spawnAsync is defined before the server class.
+export async function spawnAsync(
+  command: string,
+  args: string[],
+  options?: { timeout?: number; cwd?: string },
+): Promise<SpawnResult> {
   return new Promise((resolve, reject) => {
     debugLog(`[Spawn] Running command: ${command} ${args.join(' ')}`);
     const process = spawn(command, args, {
-      shell: false, // Reverted to false
+      shell: false,
       timeout: options?.timeout,
       cwd: options?.cwd,
-      stdio: ['ignore', 'pipe', 'pipe']
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
 
     let stdout = '';
     let stderr = '';
 
-    process.stdout.on('data', (data) => { stdout += data.toString(); });
+    process.stdout.on('data', (data) => {
+      stdout += data.toString();
+    });
     process.stderr.on('data', (data) => {
       stderr += data.toString();
       debugLog(`[Spawn Stderr Chunk] ${data.toString()}`);
     });
 
     process.on('error', (error: NodeJS.ErrnoException) => {
-      debugLog(`[Spawn Error Event] Full error object:`, error);
+      debugLog('[Spawn Error Event] Full error object:', error);
       let errorMessage = `Spawn error: ${error.message}`;
       if (error.path) {
         errorMessage += ` | Path: ${error.path}`;
@@ -127,40 +291,48 @@ export async function spawnAsync(command: string, args: string[], options?: { ti
       debugLog(`[Spawn Close] Exit code: ${code}`);
       debugLog(`[Spawn Stderr Full] ${stderr.trim()}`);
       debugLog(`[Spawn Stdout Full] ${stdout.trim()}`);
+
       if (code === 0) {
         resolve({ stdout, stderr });
-      } else {
-        reject(new Error(`Command failed with exit code ${code}\nStderr: ${stderr.trim()}\nStdout: ${stdout.trim()}`));
+        return;
       }
+
+      reject(new Error(`Command failed with exit code ${code}\nStderr: ${stderr.trim()}\nStdout: ${stdout.trim()}`));
     });
   });
 }
 
 /**
- * MCP Server for Claude Code
- * Provides a simple MCP tool to run Claude CLI in one-shot mode
+ * MCP Server for agent CLIs.
+ * Provides provider-backed MCP tools for one-shot agent execution.
  */
-export class ClaudeCodeServer {
-  private server: Server;
-  private claudeCliPath: string; // This now holds either a full path or just 'claude'
-  private packageVersion: string; // Add packageVersion property
+export class AgentCliServer {
+  private readonly server: Server;
+  private readonly providersByToolName: Map<string, AgentProviderRuntime>;
 
   constructor() {
-    // Use the simplified findClaudeCli function
-    this.claudeCliPath = findClaudeCli(); // Removed debugMode argument
-    console.error(`[Setup] Using Claude CLI command/path: ${this.claudeCliPath}`);
-    this.packageVersion = SERVER_VERSION;
+    this.providersByToolName = new Map(
+      AGENT_PROVIDERS.map((provider) => {
+        const runtime = {
+          ...provider,
+          cliCommand: resolveCliCommand(provider),
+        };
+
+        console.error(`[Setup] Using ${provider.displayName} CLI command/path: ${runtime.cliCommand} (${provider.toolName})`);
+        return [provider.toolName, runtime];
+      }),
+    );
 
     this.server = new Server(
       {
-        name: 'claude_code',
+        name: 'agent-mcp',
         version: '1.0.0',
       },
       {
         capabilities: {
           tools: {},
         },
-      }
+      },
     );
 
     this.setupToolHandlers();
@@ -172,145 +344,74 @@ export class ClaudeCodeServer {
     });
   }
 
-  /**
-   * Set up the MCP tool handlers
-   */
   private setupToolHandlers(): void {
-    // Define available tools
     this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
-      tools: [
-        {
-          name: 'claude_code',
-          description: `Claude Code Agent: Your versatile multi-modal assistant for code, file, Git, and terminal operations via Claude CLI. Use \`workFolder\` for contextual execution.
-
-• File ops: Create, read, (fuzzy) edit, move, copy, delete, list files, analyze/ocr images, file content analysis
-    └─ e.g., "Create /tmp/log.txt with 'system boot'", "Edit main.py to replace 'debug_mode = True' with 'debug_mode = False'", "List files in /src", "Move a specific section somewhere else"
-
-• Code: Generate / analyse / refactor / fix
-    └─ e.g. "Generate Python to parse CSV→JSON", "Find bugs in my_script.py"
-
-• Git: Stage ▸ commit ▸ push ▸ tag (any workflow)
-    └─ "Commit '/workspace/src/main.java' with 'feat: user auth' to develop."
-
-• Terminal: Run any CLI cmd or open URLs
-    └─ "npm run build", "Open https://developer.mozilla.org"
-
-• Web search + summarise content on-the-fly
-
-• Multi-step workflows  (Version bumps, changelog updates, release tagging, etc.)
-
-• GitHub integration  Create PRs, check CI status
-
-• Confused or stuck on an issue? Ask Claude Code for a second opinion, it might surprise you!
-
-**Prompt tips**
-
-1. Be concise, explicit & step-by-step for complex tasks. No need for niceties, this is a tool to get things done.
-2. For multi-line text, write it to a temporary file in the project root, use that file, then delete it.
-3. If you get a timeout, split the task into smaller steps.
-4. **Seeking a second opinion/analysis**: If you're stuck or want advice, you can ask \`claude_code\` to analyze a problem and suggest solutions. Clearly state in your prompt that you are looking for analysis only and no actual file modifications should be made.
-5. If workFolder is set to the project path, there is no need to repeat that path in the prompt and you can use relative paths for files.
-6. Claude Code is really good at complex multi-step file operations and refactorings and faster than your native edit features.
-7. Combine file operations, README updates, and Git commands in a sequence.
-8. Claude can do much more, just ask it!
-
-        `,
-          inputSchema: {
-            type: 'object',
-            properties: {
-              prompt: {
-                type: 'string',
-                description: 'The detailed natural language prompt for Claude to execute.',
-              },
-              workFolder: {
-                type: 'string',
-                description: 'Mandatory when using file operations or referencing any file. The working directory for the Claude CLI execution. Must be an absolute path.',
-              },
+      tools: AGENT_PROVIDERS.map((provider) => ({
+        name: provider.toolName,
+        description: buildToolDescription(provider),
+        inputSchema: {
+          type: 'object',
+          properties: {
+            prompt: {
+              type: 'string',
+              description: provider.promptDescription,
             },
-            required: ['prompt'],
+            workFolder: {
+              type: 'string',
+              description: workFolderDescription,
+            },
           },
-        }
-      ],
+          required: ['prompt'],
+        },
+      })),
     }));
 
-    // Handle tool calls
-    const executionTimeoutMs = 1800000; // 30 minutes timeout
-
-    this.server.setRequestHandler(CallToolRequestSchema, async (args, call): Promise<ServerResult> => {
+    this.server.setRequestHandler(CallToolRequestSchema, async (args): Promise<ServerResult> => {
       debugLog('[Debug] Handling CallToolRequest:', args);
 
-      // Correctly access toolName from args.params.name
       const toolName = args.params.name;
-      if (toolName !== 'claude_code') {
-        // ErrorCode.ToolNotFound should be ErrorCode.MethodNotFound as per SDK for tools
+      const provider = this.providersByToolName.get(toolName);
+      if (!provider) {
         throw new McpError(ErrorCode.MethodNotFound, `Tool ${toolName} not found`);
       }
 
-      // Robustly access prompt from args.params.arguments
-      const toolArguments = args.params.arguments;
-      let prompt: string;
-
-      if (
-        toolArguments &&
-        typeof toolArguments === 'object' &&
-        'prompt' in toolArguments &&
-        typeof toolArguments.prompt === 'string'
-      ) {
-        prompt = toolArguments.prompt;
-      } else {
-        throw new McpError(ErrorCode.InvalidParams, 'Missing or invalid required parameter: prompt (must be an object with a string "prompt" property) for claude_code tool');
-      }
-
-      // Determine the working directory
-      let effectiveCwd = homedir(); // Default CWD is user's home directory
-
-      // Check if workFolder is provided in the tool arguments
-      if (toolArguments.workFolder && typeof toolArguments.workFolder === 'string') {
-        const resolvedCwd = pathResolve(toolArguments.workFolder);
-        debugLog(`[Debug] Specified workFolder: ${toolArguments.workFolder}, Resolved to: ${resolvedCwd}`);
-
-        // Check if the resolved path exists
-        if (existsSync(resolvedCwd)) {
-          effectiveCwd = resolvedCwd;
-          debugLog(`[Debug] Using workFolder as CWD: ${effectiveCwd}`);
-        } else {
-          debugLog(`[Warning] Specified workFolder does not exist: ${resolvedCwd}. Using default: ${effectiveCwd}`);
-        }
-      } else {
-        debugLog(`[Debug] No workFolder provided, using default CWD: ${effectiveCwd}`);
-      }
+      const parsedArguments = parseToolArguments(args.params.arguments, toolName);
+      const effectiveCwd = resolveWorkingDirectory(parsedArguments.workFolder);
 
       try {
-        debugLog(`[Debug] Attempting to execute Claude CLI with prompt: "${prompt}" in CWD: "${effectiveCwd}"`);
+        debugLog(`[Debug] Attempting to execute ${provider.displayName} CLI with prompt: "${parsedArguments.prompt}" in CWD: "${effectiveCwd}"`);
 
-        // Print tool info on first use
         if (isFirstToolUse) {
-          const versionInfo = `claude_code v${SERVER_VERSION} started at ${serverStartupTime}`;
-          console.error(versionInfo);
+          console.error(`${provider.toolName} v${SERVER_VERSION} started at ${serverStartupTime}`);
           isFirstToolUse = false;
         }
 
-        const claudeProcessArgs = ['--dangerously-skip-permissions', '-p', prompt];
-        debugLog(`[Debug] Invoking Claude CLI: ${this.claudeCliPath} ${claudeProcessArgs.join(' ')}`);
+        const invocation = provider.buildInvocation({
+          prompt: parsedArguments.prompt,
+          cwd: effectiveCwd,
+        });
 
-        const { stdout, stderr } = await spawnAsync(
-          this.claudeCliPath, // Run the Claude CLI directly
-          claudeProcessArgs, // Pass the arguments
-          { timeout: executionTimeoutMs, cwd: effectiveCwd }
-        );
+        try {
+          debugLog(`[Debug] Invoking ${provider.displayName} CLI: ${provider.cliCommand} ${invocation.args.join(' ')}`);
+          const result = await spawnAsync(provider.cliCommand, invocation.args, {
+            timeout: executionTimeoutMs,
+            cwd: effectiveCwd,
+          });
 
-        debugLog('[Debug] Claude CLI stdout:', stdout.trim());
-        if (stderr) {
-          debugLog('[Debug] Claude CLI stderr:', stderr.trim());
+          debugLog(`[Debug] ${provider.displayName} CLI stdout:`, result.stdout.trim());
+          if (result.stderr) {
+            debugLog(`[Debug] ${provider.displayName} CLI stderr:`, result.stderr.trim());
+          }
+
+          const output = provider.extractOutput?.(result, invocation) ?? result.stdout;
+          return { content: [{ type: 'text', text: output }] };
+        } finally {
+          cleanupInvocation(invocation);
         }
-
-        // Return stdout content, even if there was stderr, as claude-cli might output main result to stdout.
-        return { content: [{ type: 'text', text: stdout }] };
-
       } catch (error: any) {
-        debugLog('[Error] Error executing Claude CLI:', error);
+        debugLog(`[Error] Error executing ${provider.displayName} CLI:`, error);
+
         let errorMessage = error.message || 'Unknown error';
-        // Attempt to include stderr and stdout from the error object if spawnAsync attached them
         if (error.stderr) {
           errorMessage += `\nStderr: ${error.stderr}`;
         }
@@ -318,27 +419,35 @@ export class ClaudeCodeServer {
           errorMessage += `\nStdout: ${error.stdout}`;
         }
 
-        if (error.signal === 'SIGTERM' || (error.message && error.message.includes('ETIMEDOUT')) || (error.code === 'ETIMEDOUT')) {
-          // Reverting to InternalError due to lint issues, but with a specific timeout message.
-          throw new McpError(ErrorCode.InternalError, `Claude CLI command timed out after ${executionTimeoutMs / 1000}s. Details: ${errorMessage}`);
+        if (
+          error.signal === 'SIGTERM' ||
+          (error.message && error.message.includes('ETIMEDOUT')) ||
+          error.code === 'ETIMEDOUT'
+        ) {
+          throw new McpError(
+            ErrorCode.InternalError,
+            `${provider.displayName} CLI command timed out after ${executionTimeoutMs / 1000}s. Details: ${errorMessage}`,
+          );
         }
-        // ErrorCode.ToolCallFailed should be ErrorCode.InternalError or a more specific execution error if available
-        throw new McpError(ErrorCode.InternalError, `Claude CLI execution failed: ${errorMessage}`);
+
+        throw new McpError(ErrorCode.InternalError, `${provider.displayName} CLI execution failed: ${errorMessage}`);
       }
     });
   }
 
   /**
-   * Start the MCP server
+   * Start the MCP server.
    */
   async run(): Promise<void> {
-    // Revert to original server start logic if listen caused errors
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
-    console.error('Claude Code MCP server running on stdio');
+    console.error('agent-mcp server running on stdio');
   }
 }
 
-// Create and run the server if this is the main module
-const server = new ClaudeCodeServer();
-server.run().catch(console.error);
+export const ClaudeCodeServer = AgentCliServer;
+
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
+  const server = new AgentCliServer();
+  server.run().catch(console.error);
+}

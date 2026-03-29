@@ -3,9 +3,9 @@ import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { MCPTestClient } from './utils/mcp-client.js';
-import { getSharedMock, cleanupSharedMock } from './utils/persistent-mock.js';
+import { getSharedMock, getSharedCodexMock, cleanupSharedMock } from './utils/persistent-mock.js';
 
-describe('Claude Code MCP E2E Tests', () => {
+describe('agent-mcp E2E Tests', () => {
   let client: MCPTestClient;
   let testDir: string;
   const serverPath = 'dist/server.js';
@@ -13,14 +13,16 @@ describe('Claude Code MCP E2E Tests', () => {
   beforeEach(async () => {
     // Ensure mock exists
     await getSharedMock();
+    await getSharedCodexMock();
     
     // Create a temporary directory for test files
-    testDir = mkdtempSync(join(tmpdir(), 'claude-code-test-'));
+    testDir = mkdtempSync(join(tmpdir(), 'agent-mcp-test-'));
     
     // Initialize MCP client with debug mode and custom binary name using absolute path
     client = new MCPTestClient(serverPath, {
       MCP_CLAUDE_DEBUG: 'true',
-      CLAUDE_CLI_NAME: '/tmp/claude-code-test-mock/claudeMocked',
+      CLAUDE_CLI_NAME: '/tmp/agent-cli-test-mock/claudeMocked',
+      CODEX_CLI_NAME: '/tmp/agent-cli-test-mock/codexMocked',
     });
     
     await client.connect();
@@ -40,10 +42,10 @@ describe('Claude Code MCP E2E Tests', () => {
   });
 
   describe('Tool Registration', () => {
-    it('should register claude_code tool', async () => {
+    it('should register claude_code and codex tools', async () => {
       const tools = await client.listTools();
       
-      expect(tools).toHaveLength(1);
+      expect(tools).toHaveLength(2);
       expect(tools[0]).toEqual({
         name: 'claude_code',
         description: expect.stringContaining('Claude Code Agent'),
@@ -62,12 +64,43 @@ describe('Claude Code MCP E2E Tests', () => {
           required: ['prompt'],
         },
       });
+
+      expect(tools[1]).toEqual({
+        name: 'codex',
+        description: expect.stringContaining('Codex Agent'),
+        inputSchema: {
+          type: 'object',
+          properties: {
+            prompt: {
+              type: 'string',
+              description: 'The detailed natural language prompt for Codex to execute.',
+            },
+            workFolder: {
+              type: 'string',
+              description: expect.stringContaining('working directory'),
+            },
+          },
+          required: ['prompt'],
+        },
+      });
     });
   });
 
   describe('Basic Operations', () => {
     it('should execute a simple prompt', async () => {
       const response = await client.callTool('claude_code', {
+        prompt: 'create a file called test.txt with content "Hello World"',
+        workFolder: testDir,
+      });
+
+      expect(response).toEqual([{
+        type: 'text',
+        text: expect.stringContaining('successfully'),
+      }]);
+    });
+
+    it('should execute a simple Codex prompt', async () => {
+      const response = await client.callTool('codex', {
         prompt: 'create a file called test.txt with content "Hello World"',
         workFolder: testDir,
       });
@@ -145,7 +178,7 @@ describe('Integration Tests (Local Only)', () => {
   let testDir: string;
 
   beforeEach(async () => {
-    testDir = mkdtempSync(join(tmpdir(), 'claude-code-integration-'));
+    testDir = mkdtempSync(join(tmpdir(), 'agent-mcp-integration-'));
     
     // Initialize client without mocks for real Claude testing
     client = new MCPTestClient('dist/server.js', {

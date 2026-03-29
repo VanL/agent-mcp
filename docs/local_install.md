@@ -10,8 +10,8 @@ This method is suitable if you prefer not to install the server globally or want
 
 1.  **Clone the repository:**
     ```bash
-    git clone https://github.com/steipete/claude-code-mcp.git # Or your fork/actual repo URL
-    cd claude-code-mcp
+    git clone https://github.com/VanL/agent-mcp.git # Or your fork/actual repo URL
+    cd agent-mcp
     ```
 
 2.  **Install dependencies:**
@@ -41,29 +41,35 @@ This method is suitable if you prefer not to install the server globally or want
     ```
     **Important:** Replace `/absolute/path/to/claude-mcp-server` with the actual absolute path to where you cloned the server.
 
-5.  **First-Time Claude CLI Permissions:**
-    As mentioned in the main README, ensure you've run the Claude CLI once with `--dangerously-skip-permissions` to accept terms:
+5.  **First-Time Provider CLI Permissions:**
+    As mentioned in the main README, ensure you've run any provider CLI you plan to use at least once so authentication and bypass warnings are accepted.
+
+    Claude example:
     ```bash
     claude -p "hello" --dangerously-skip-permissions
     # Or ~/.claude/local/claude -p "hello" --dangerously-skip-permissions
     ```
 
+    Codex example:
+    ```bash
+    codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check "hello"
+    ```
+
 6.  **Environment Variables for `start.sh` (Optional):**
     You can customize the server behavior by setting environment variables before running `start.sh` or by editing the `start.sh` script itself:
-    - `CLAUDE_CLI_PATH`: Set a custom absolute path to the Claude CLI executable.
+    - `CLAUDE_CLI_NAME`: Set a custom Claude CLI executable name or absolute path.
+    - `CODEX_CLI_NAME`: Set a custom Codex CLI executable name or absolute path.
     - `MCP_CLAUDE_DEBUG`: Set to `true` to enable verbose debug logging from the MCP server.
-    - `CLAUDE_CLI_TOOLS_DEFAULT`: Comma-separated list of default tools.
-    - `CLAUDE_CLI_TOOLS_DANGEROUS`: Comma-separated list of tools to always enable.
-    Refer to `start.sh` and the main README's "Configuration via Environment Variables" section for more details.
+    Refer to the main README's "Configuration via Environment Variables" section for more details.
 
 ## Option 2: Local Development with `npm link`
 
-This method allows you to install the package globally but have it point to your local cloned repository. This is useful for testing the global command (`claude-code-mcp`) with your local changes.
+This method allows you to install the package globally but have it point to your local cloned repository. This is useful for testing the global command (`agent-mcp`) with your local changes.
 
 1.  **Clone the repository (if not already done):**
     ```bash
-    git clone https://github.com/steipete/claude-code-mcp.git # Or your fork/actual repo URL
-    cd claude-code-mcp
+    git clone https://github.com/VanL/agent-mcp.git # Or your fork/actual repo URL
+    cd agent-mcp
     ```
 
 2.  **Install dependencies and build:**
@@ -73,20 +79,20 @@ This method allows you to install the package globally but have it point to your
     ```
 
 3.  **Link the package:**
-    This makes `claude-code-mcp` (as defined in `package.json`'s `bin` field) available globally, pointing to your local `dist/server.js`.
+    This makes `agent-mcp` (as defined in `package.json`'s `bin` field) available globally, pointing to your local `dist/server.js`.
     ```bash
     npm link
     ```
-    After linking, running `claude-code-mcp` in your terminal will execute your local build.
+    After linking, running `agent-mcp` in your terminal will execute your local build.
 
 4.  **Configure MCP Client for Linked Command:**
-    Update your `mcp.json` file to use the `claude-code-mcp` command (which now points to your local linked version):
+    Update your `mcp.json` file to use the `agent-mcp` command (which now points to your local linked version):
     ```json
     {
       "mcpServers": {
         "claude_code": {
           "type": "stdio",
-          "command": ["claude-code-mcp"],
+          "command": ["agent-mcp"],
           "args": [],
           "env": {
             "MCP_CLAUDE_DEBUG": "false" // Or "true" for debugging
@@ -107,5 +113,5 @@ This method allows you to install the package globally but have it point to your
 ## General Development Notes
 
 - **TypeScript:** The server is written in TypeScript. Code is in the `src/` directory and compiled to `dist/`.
-- **Prerequisites:** Ensure Node.js v20+ and a working Claude CLI are installed.
-- **Contributing:** Submit issues and pull requests to the main [GitHub repository](https://github.com/steipete/claude-code-mcp).
+- **Prerequisites:** Ensure Node.js v20+ and whichever provider CLIs you plan to expose are installed.
+- **Contributing:** Submit issues and pull requests to the main [GitHub repository](https://github.com/VanL/agent-mcp).

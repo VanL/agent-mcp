@@ -1,30 +1,32 @@
-# Claude Code MCP Server
+# agent-mcp
 
-<img src="assets/claude_code_mcp_logo.png" alt="Claude Code MCP Logo">
+<img src="assets/claude_code_mcp_logo.png" alt="agent-mcp logo">
 
-[![npm package](https://img.shields.io/npm/v/@steipete/claude-code-mcp)](https://www.npmjs.com/package/@steipete/claude-code-mcp)
+[![npm package](https://img.shields.io/npm/v/agent-mcp)](https://www.npmjs.com/package/agent-mcp)
 [![View changelog](https://img.shields.io/badge/Explore%20Changelog-brightgreen)](/CHANGELOG.md)
 
-An MCP (Model Context Protocol) server that allows running Claude Code in one-shot mode with permissions bypassed automatically.
+An MCP (Model Context Protocol) server that allows running agent CLIs in one-shot mode with permissions bypassed automatically.
 
-Did you notice that Cursor sometimes struggles with complex, multi-step edits or operations? This server, with its powerful unified `claude_code` tool, aims to make Claude a more direct and capable agent for your coding tasks.
+Did you notice that Cursor sometimes struggles with complex, multi-step edits or operations? This server exposes provider-backed MCP tools such as `claude_code` and `codex`, making those agents directly available for coding tasks while keeping the adapter layer extensible for future CLIs like Qwen or Gemini.
 
 <img src="assets/screenshot.png" width="300" alt="Screenshot">
 
 ## Overview
 
-This MCP server provides one tool that can be used by LLMs to interact with Claude Code. When integrated with Claude Desktop or other MCP clients, it allows LLMs to:
+This MCP server provides multiple provider-backed tools that can be used by LLMs to interact with agent CLIs. When integrated with Claude Desktop or other MCP clients, it allows LLMs to:
 
-- Run Claude Code with all permissions bypassed (using `--dangerously-skip-permissions`)
-- Execute Claude Code with any prompt without permission interruptions
+- Run Claude Code with `--dangerously-skip-permissions`
+- Run Codex with `codex exec --dangerously-bypass-approvals-and-sandbox`
+- Add more providers by extending the registry in [`src/server.ts`](./src/server.ts)
 - Access file editing capabilities directly
-- Enable specific tools by default
+- Keep provider-specific execution details in one place
 
 ## Benefits
 
 - Claude/Windsurf often have trouble editing files. Claude Code is better and faster at it.
+- Codex is now available through the same MCP server, so clients can offload tasks without a second server process.
 - Multiple commands can be queued instead of direct execution. This saves context space so more important stuff is retained longer, fewer compacts happen.
-- File ops, git, or other operations don't need costy models. Claude Code is pretty cost effective if you sign up for Antropic Max. You can use Gemini or o3 in Max mode and save costs with offloading tasks to cheaper models.
+- File ops, git, or other operations don't need costy models. You can route work to Claude Code, Codex, and future providers as needed.
 - Claude has wider system access and can do things that Cursor/Windsurf can't do (or believe they can't), so whenever they are stuck just ask them "use claude code" and it will usually un-stuck them.
 - Agents in Agents rules.
 
@@ -33,7 +35,8 @@ This MCP server provides one tool that can be used by LLMs to interact with Clau
 ## Prerequisites
 
 - Node.js v20 or later (Use fnm or nvm to install)
-- Claude CLI installed locally (run it and call /doctor) and `-dangerously-skip-permissions` accepted.
+- Claude CLI installed locally if you want to use `claude_code`
+- Codex CLI installed locally if you want to use `codex`
 
 ## Configuration
 
@@ -49,24 +52,24 @@ This MCP server provides one tool that can be used by LLMs to interact with Clau
   - Absolute path: `CLAUDE_CLI_NAME=/path/to/custom/claude`
   
   Relative paths (e.g., `./claude` or `../claude`) are not allowed and will throw an error.
-  
-  When set to a simple name, the server will look for the specified binary in:
-  1. The system PATH (instead of the default `claude` command)
-  
-  Note: The local user installation path (`~/.claude/local/claude`) will still be checked but only for the default `claude` binary.
 
-- `MCP_CLAUDE_DEBUG`: Enable debug logging (set to `true` for verbose output)
+- `CODEX_CLI_NAME`: Override the Codex CLI binary name or provide an absolute path (default: `codex`).
+  - Simple name: `CODEX_CLI_NAME=codex-nightly`
+  - Absolute path: `CODEX_CLI_NAME=/path/to/custom/codex`
+  - Relative paths are rejected, the same as `CLAUDE_CLI_NAME`
+
+- `MCP_CLAUDE_DEBUG`: Enable verbose debug logging for the server and all configured providers.
 
 ## Installation & Usage
 
 The recommended way to use this server is by installing it by using `npx`.
 
 ```json
-    "claude-code-mcp": {
+    "agent-mcp": {
       "command": "npx",
       "args": [
         "-y",
-        "@steipete/claude-code-mcp@latest"
+        "agent-mcp@latest"
       ]
     },
 ```
@@ -74,11 +77,11 @@ The recommended way to use this server is by installing it by using `npx`.
 To use a custom Claude CLI binary name, you can specify the environment variable:
 
 ```json
-    "claude-code-mcp": {
+    "agent-mcp": {
       "command": "npx",
       "args": [
         "-y",
-        "@steipete/claude-code-mcp@latest"
+        "agent-mcp@latest"
       ],
       "env": {
         "CLAUDE_CLI_NAME": "claude-custom"
@@ -86,11 +89,27 @@ To use a custom Claude CLI binary name, you can specify the environment variable
     },
 ```
 
+To expose both Claude Code and Codex with custom binaries:
+
+```json
+    "agent-mcp": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "agent-mcp@latest"
+      ],
+      "env": {
+        "CLAUDE_CLI_NAME": "claude-custom",
+        "CODEX_CLI_NAME": "codex"
+      }
+    },
+```
+
 ## Important First-Time Setup: Accepting Permissions
 
-**Before the MCP server can successfully use the `claude_code` tool, you must first run the Claude CLI manually once with the `--dangerously-skip-permissions` flag, login and accept the terms.**
+Before the MCP server can successfully use a provider tool, run that provider's CLI manually once, authenticate, and accept any required terms or bypass warnings.
 
-This is a one-time requirement by the Claude CLI.
+### Claude Code
 
 ```bash
 npm install -g @anthropic-ai/claude-code
@@ -99,7 +118,13 @@ npm install -g @anthropic-ai/claude-code
 claude --dangerously-skip-permissions
 ```
 
-Follow the prompts to accept. Once this is done, the MCP server will be able to use the flag non-interactively.
+### Codex
+
+```bash
+codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check "hello"
+```
+
+Follow the prompts to accept. Once this is done, the MCP server will be able to use the provider non-interactively.
 
 macOS might ask for all kind of folder permissions the first time the tool runs and the first run then fails. Subsequent runs will work.
 
@@ -127,11 +152,11 @@ Windsurf users use `mcp_config.json`
 
 (Note: In some mixed setups, if Cursor is also installed, these clients might fall back to using Cursor's `~/.cursor/mcp.json` path. Prioritize the Codeium-specific paths if using the Codeium extension.)
 
-Create this file if it doesn't exist. Add or update the configuration for `claude_code`:
+Create this file if it doesn't exist. Add or update the configuration for your MCP server entry:
 
 ## Tools Provided
 
-This server exposes one primary tool:
+This server exposes provider-backed tools:
 
 ### `claude_code`
 
@@ -139,18 +164,27 @@ Executes a prompt directly using the Claude Code CLI with `--dangerously-skip-pe
 
 **Arguments:**
 - `prompt` (string, required): The prompt to send to Claude Code.
-- `options` (object, optional):
-  - `tools` (array of strings, optional): Specific Claude tools to enable (e.g., `Bash`, `Read`, `Write`). Common tools are enabled by default.
+- `workFolder` (string, optional): Absolute working directory to use for file, git, and shell work.
+
+### `codex`
+
+Executes a prompt directly using `codex exec --dangerously-bypass-approvals-and-sandbox`.
+
+**Arguments:**
+- `prompt` (string, required): The prompt to send to Codex.
+- `workFolder` (string, optional): Absolute working directory to use for file, git, and shell work.
 
 **Example MCP Request:**
 ```json
 {
-  "toolName": "claude_code:claude_code",
+  "toolName": "agent-mcp:claude_code",
   "arguments": {
     "prompt": "Refactor the function foo in main.py to be async."
   }
 }
 ```
+
+You can call Codex the same way by switching `toolName` to `agent-mcp:codex`.
 
 ### Examples
 
@@ -164,7 +198,7 @@ Here are some visual examples of the server in action:
 
 ### Fixing ESLint Setup
 
-Here's an example of using the Claude Code MCP tool to interactively fix an ESLint setup by deleting old configuration files and creating a new one:
+Here's an example of using agent-mcp to interactively fix an ESLint setup by deleting old configuration files and creating a new one:
 
 <img src="assets/eslint_example.png" alt="ESLint file operations example" width="50%">
 
@@ -176,7 +210,7 @@ Here's an example of the Claude Code tool listing files in a directory:
 
 ## Key Use Cases
 
-This server, through its unified `claude_code` tool, unlocks a wide range of powerful capabilities by giving your AI direct access to the Claude Code CLI. Here are some examples of what you can achieve:
+This server, through its provider-backed tools, unlocks a wide range of capabilities by giving your AI direct access to agent CLIs. Here are some examples of what you can achieve:
 
 1.  **Code Generation, Analysis & Refactoring:**
     -   `"Generate a Python script to parse CSV data and output JSON."`
@@ -223,10 +257,18 @@ This example illustrates `claude_code` handling a more complex, multi-step task,
 
 **CRITICAL: Remember to provide Current Working Directory (CWD) context in your prompts for file system or git operations (e.g., `"Your work folder is /path/to/project\n\n...your command..."`).**
 
+## Extending Providers
+
+The server is now organized around a provider registry in [`src/server.ts`](./src/server.ts). To add another provider such as Qwen or Gemini:
+
+1. Add a new provider config with a `toolName`, `cliEnvVar`, and `buildInvocation` function.
+2. If the CLI needs structured output capture, add an `extractOutput` function.
+3. Add mock coverage in `src/__tests__/utils/` and extend the e2e tests with the new tool.
+
 ## Troubleshooting
 
-- **"Command not found" (claude-code-mcp):** If installed globally, ensure the npm global bin directory is in your system's PATH. If using `npx`, ensure `npx` itself is working.
-- **"Command not found" (claude or ~/.claude/local/claude):** Ensure the Claude CLI is installed correctly. Run `claude/doctor` or check its documentation.
+- **"Command not found" (`agent-mcp`):** If installed globally, ensure the npm global bin directory is in your system's PATH. If using `npx`, ensure `npx` itself is working.
+- **"Command not found" (provider CLI):** Ensure the underlying CLI is installed correctly and that `CLAUDE_CLI_NAME` or `CODEX_CLI_NAME` points to a valid executable when overridden.
 - **Permissions Issues:** Make sure you've run the "Important First-Time Setup" step.
 - **JSON Errors from Server:** If `MCP_CLAUDE_DEBUG` is `true`, error messages or logs might interfere with MCP's JSON parsing. Set to `false` for normal operation.
 - **ESM/Import Errors:** Ensure you are using Node.js v20 or later.
@@ -275,7 +317,7 @@ These can be set in your shell environment or within the `env` block of your `mc
 
 Contributions are welcome! Please refer to the [Local Installation & Development Setup Guide](./docs/local_install.md) for details on setting up your environment.
 
-Submit issues and pull requests to the [GitHub repository](https://github.com/steipete/claude-code-mcp).
+Submit issues and pull requests to the [GitHub repository](https://github.com/VanL/agent-mcp).
 
 ## License
 

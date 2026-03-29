@@ -7,11 +7,10 @@ import { join, dirname } from 'node:path';
  */
 export class ClaudeMock {
   private mockPath: string;
-  private responses = new Map<string, string>();
 
   constructor(binaryName: string = 'claude') {
     // Always use /tmp directory for mocks in tests
-    this.mockPath = join('/tmp', 'claude-code-test-mock', binaryName);
+    this.mockPath = join('/tmp', 'agent-cli-test-mock', binaryName);
   }
 
   /**
@@ -82,6 +81,7 @@ fi
    * Add a mock response for a specific prompt pattern
    */
   addResponse(pattern: string, response: string): void {
-    this.responses.set(pattern, response);
+    void pattern;
+    void response;
   }
 }

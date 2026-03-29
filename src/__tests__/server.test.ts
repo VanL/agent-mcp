@@ -16,7 +16,8 @@ vi.mock('@modelcontextprotocol/sdk/types.js', () => ({
   CallToolRequestSchema: { name: 'callTool' },
   ErrorCode: { 
     InternalError: 'InternalError',
-    MethodNotFound: 'MethodNotFound'
+    MethodNotFound: 'MethodNotFound',
+    InvalidParams: 'InvalidParams',
   },
   McpError: vi.fn().mockImplementation((code, message) => {
     const error = new Error(message);
@@ -434,9 +435,11 @@ describe('ClaudeCodeServer Unit Tests', () => {
       const handler = listToolsCall[1];
       const result = await handler();
       
-      expect(result.tools).toHaveLength(1);
+      expect(result.tools).toHaveLength(2);
       expect(result.tools[0].name).toBe('claude_code');
       expect(result.tools[0].description).toContain('Claude Code Agent');
+      expect(result.tools[1].name).toBe('codex');
+      expect(result.tools[1].description).toContain('Codex Agent');
     });
 
     it('should handle CallToolRequest', async () => {

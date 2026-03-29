@@ -19,7 +19,8 @@ vi.mock('@modelcontextprotocol/sdk/types.js', () => ({
   CallToolRequestSchema: { name: 'callTool' },
   ErrorCode: { 
     InternalError: 'InternalError',
-    MethodNotFound: 'MethodNotFound'
+    MethodNotFound: 'MethodNotFound',
+    InvalidParams: 'InvalidParams',
   },
   McpError: vi.fn().mockImplementation((code, message) => {
     const error = new Error(message);

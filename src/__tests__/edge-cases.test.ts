@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { MCPTestClient } from './utils/mcp-client.js';
-import { getSharedMock, cleanupSharedMock } from './utils/persistent-mock.js';
+import { getSharedMock, getSharedCodexMock, cleanupSharedMock } from './utils/persistent-mock.js';
 
 describe('Claude Code Edge Cases', () => {
   let client: MCPTestClient;
@@ -13,14 +13,16 @@ describe('Claude Code Edge Cases', () => {
   beforeEach(async () => {
     // Ensure mock exists
     await getSharedMock();
+    await getSharedCodexMock();
     
     // Create test directory
-    testDir = mkdtempSync(join(tmpdir(), 'claude-code-edge-'));
+    testDir = mkdtempSync(join(tmpdir(), 'agent-mcp-edge-'));
     
     // Initialize client with custom binary name using absolute path
     client = new MCPTestClient(serverPath, {
       MCP_CLAUDE_DEBUG: 'true',
-      CLAUDE_CLI_NAME: '/tmp/claude-code-test-mock/claudeMocked',
+      CLAUDE_CLI_NAME: '/tmp/agent-cli-test-mock/claudeMocked',
+      CODEX_CLI_NAME: '/tmp/agent-cli-test-mock/codexMocked',
     });
     
     await client.connect();
@@ -54,14 +56,13 @@ describe('Claude Code Edge Cases', () => {
       ).rejects.toThrow();
     });
 
-    it('should handle invalid workFolder type', async () => {
-      // Server doesn't strictly validate the workFolder type in TypeScript
-      const response = await client.callTool('claude_code', {
-        prompt: 'Test prompt',
-        workFolder: 123, // Should be string but gets coerced
-      });
-      
-      expect(response).toBeTruthy();
+    it('should reject invalid workFolder type', async () => {
+      await expect(
+        client.callTool('claude_code', {
+          prompt: 'Test prompt',
+          workFolder: 123,
+        }),
+      ).rejects.toThrow(/workFolder/i);
     });
 
     it('should handle empty prompt', async () => {

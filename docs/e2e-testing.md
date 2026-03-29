@@ -1,10 +1,10 @@
-# End-to-End Testing for Claude Code MCP
+# End-to-End Testing for Agent CLI MCP
 
-This document explains how to run and maintain the end-to-end tests for the Claude Code MCP server.
+This document explains how to run and maintain the end-to-end tests for the provider-backed MCP server.
 
 ## Overview
 
-The e2e tests are designed to validate the Claude Code MCP server's functionality in real-world scenarios. Since the Claude CLI requires authentication and isn't easily installable in automated environments, the tests use a mock Claude CLI for automated testing and provide optional integration tests for local development.
+The e2e tests validate the server's provider adapters in real-world scenarios. Since the underlying CLIs require authentication and are not always available in automated environments, the tests use mock CLIs for automated coverage and provide optional integration tests for local development.
 
 ## Test Structure
 
@@ -14,6 +14,7 @@ The e2e tests are organized into several files:
 - `src/__tests__/edge-cases.test.ts` - Edge case and error handling tests
 - `src/__tests__/utils/mcp-client.ts` - Mock MCP client for testing
 - `src/__tests__/utils/claude-mock.ts` - Mock Claude CLI implementation
+- `src/__tests__/utils/codex-mock.ts` - Mock Codex CLI implementation
 
 ## Running Tests
 
@@ -38,14 +39,14 @@ npm run test:unit
 
 ### Local Integration Testing
 
-When Claude CLI is installed locally, you can run the full integration tests:
+When the provider CLIs are installed locally, you can run the full integration tests:
 
 ```bash
 # Run all tests including integration tests
 npm run test:e2e:local
 ```
 
-The integration tests are marked with `.skip()` by default and will only run when you have Claude CLI installed and authenticated.
+The integration tests are marked with `.skip()` by default and will only run when you have the relevant provider CLI installed and authenticated.
 
 ## Test Scenarios
 
@@ -72,11 +73,11 @@ The integration tests are marked with `.skip()` by default and will only run whe
 - Git operations
 - Complex multi-step workflows
 
-## Mock Claude CLI
+## Mock Provider CLIs
 
-The tests use a mock Claude CLI that simulates basic Claude behavior. The mock:
+The tests use mock CLIs that simulate basic provider behavior. The mocks:
 
-1. Creates a fake executable at `~/.claude/local/claude`
+1. Create fake executables in `/tmp/agent-cli-test-mock`
 2. Responds to basic commands based on prompt patterns
 3. Simulates errors for testing error handling
 

@@ -1,6 +1,6 @@
 # Release Process
 
-This document describes the release process for claude-code-mcp to ensure quality and prevent issues like the package.json import problem.
+This document describes the release process for agent-mcp to ensure quality and prevent issues like the package.json import problem.
 
 ## Pre-release Testing
 
@@ -16,7 +16,7 @@ This document describes the release process for claude-code-mcp to ensure qualit
 
 2. **Test in Claude**
    - Restart Claude Desktop app
-   - Use the `claude-code-local` tool
+   - Use the `agent-mcp-local` server entry
    - Verify version print on first use
    - Test various commands
 

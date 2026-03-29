@@ -4,11 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository Purpose
 
-This is the source code for the Claude Code MCP tool - a server that allows running Claude Code in one-shot mode with permissions bypassed automatically. When you're asked to edit the Claude Code tool description or behavior, update it in `src/server.ts`.
+This is the source code for `agent-mcp` - a provider-backed MCP server that allows running agent CLIs like Claude Code and Codex in one-shot mode with permissions bypassed automatically. When you're asked to edit the tool descriptions or provider behavior, update `src/server.ts`.
 
 ## Key Files
 
-- `src/server.ts`: The main server implementation containing the Claude Code tool description and functionality
+- `src/server.ts`: The main server implementation containing the provider registry, tool descriptions, and CLI execution behavior
 - `package.json`: Package configuration and dependencies
 - `start.sh`/`start.bat`: Scripts to start the server
 
@@ -30,18 +30,19 @@ npm run dev
 
 ## Tool Description
 
-The tool description can be found in `src/server.ts`. When asked to update the Claude Code tool description, look for the `description` field in the `setupToolHandlers` method.
+The tool descriptions live in `src/server.ts`. When asked to update a tool description or add a new provider, update the provider registry and the generated descriptions in `setupToolHandlers`.
 
 ## Architecture Notes
 
-- This MCP server provides a single tool (`claude_code`) that executes Claude CLI with bypassed permissions
-- The server handles execution via the `spawnAsync` function that runs Claude CLI with appropriate parameters
+- This MCP server provides multiple tools, currently including `claude_code` and `codex`
+- The server handles execution via the `spawnAsync` function and provider-specific invocation builders
 - Error handling and timeout management are implemented for reliability
 - Working directory can be specified via the `workFolder` parameter
 
 ## Environment Variables
 
-- `CLAUDE_CLI_PATH`: Path to the Claude CLI executable
+- `CLAUDE_CLI_NAME`: Override the Claude CLI executable name or absolute path
+- `CODEX_CLI_NAME`: Override the Codex CLI executable name or absolute path
 - `MCP_CLAUDE_DEBUG`: Set to `true` for verbose debug logging
 
 ## Best Practices

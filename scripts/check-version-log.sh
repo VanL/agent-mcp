@@ -2,9 +2,9 @@
 
 # Script to check if version print is working correctly
 
-LOG_FILE="$HOME/Library/Logs/Claude/mcp-server-claude-code.log"
+LOG_FILE="$HOME/Library/Logs/Claude/mcp-server-agent-mcp.log"
 
-echo "🔍 Checking Claude MCP logs for version print..."
+echo "🔍 Checking agent-mcp logs for version print..."
 echo "================================================"
 
 # Look for version print in the last 100 lines

@@ -39,7 +39,7 @@ osascript -e 'tell application "Claude" to activate'
 sleep 5
 
 # Monitor the logs
-LOG_FILE="$HOME/Library/Logs/Claude/mcp-server-claude-code.log"
+LOG_FILE="$HOME/Library/Logs/Claude/mcp-server-agent-mcp.log"
 echo "📊 Monitoring MCP server logs..."
 echo "   Waiting for server initialization..."
 echo ""
@@ -54,7 +54,7 @@ TAIL_PID=$!
 echo "📋 Next steps:"
 echo "1. Claude has been restarted automatically"
 echo "2. Watch the log output above for any errors"
-echo "3. Test the claude-code-local MCP server in Claude"
+echo "3. Test the agent-mcp-local MCP server in Claude"
 echo "4. Verify the version print feature works"
 echo "5. Press Ctrl+C to stop monitoring logs"
 echo ""
