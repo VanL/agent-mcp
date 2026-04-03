@@ -55,10 +55,22 @@ This method is suitable if you prefer not to install the server globally or want
     codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check "hello"
     ```
 
+    Gemini example:
+    ```bash
+    gemini -p "hello" -y -o text
+    ```
+
+    Qwen example:
+    ```bash
+    qwen -y -o text -- "hello"
+    ```
+
 6.  **Environment Variables for `start.sh` (Optional):**
     You can customize the server behavior by setting environment variables before running `start.sh` or by editing the `start.sh` script itself:
     - `CLAUDE_CLI_NAME`: Set a custom Claude CLI executable name or absolute path.
     - `CODEX_CLI_NAME`: Set a custom Codex CLI executable name or absolute path.
+    - `GEMINI_CLI_NAME`: Set a custom Gemini CLI executable name or absolute path.
+    - `QWEN_CLI_NAME`: Set a custom Qwen CLI executable name or absolute path.
     - `MCP_CLAUDE_DEBUG`: Set to `true` to enable verbose debug logging from the MCP server.
     Refer to the main README's "Configuration via Environment Variables" section for more details.
 

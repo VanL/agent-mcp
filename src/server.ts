@@ -238,7 +238,40 @@ const codexProvider: AgentProviderConfig = {
   },
 };
 
-export const AGENT_PROVIDERS: readonly AgentProviderConfig[] = [claudeProvider, codexProvider];
+const geminiProvider: AgentProviderConfig = {
+  id: 'gemini',
+  toolName: 'gemini',
+  title: 'Gemini Agent',
+  displayName: 'Gemini',
+  recommendedUse: 'Gemini',
+  cliEnvVar: 'GEMINI_CLI_NAME',
+  defaultCliCommand: 'gemini',
+  promptDescription: 'The detailed natural language prompt for Gemini to execute.',
+  buildInvocation: ({ prompt }) => ({
+    args: ['-p', prompt, '-y', '-o', 'text'],
+  }),
+};
+
+const qwenProvider: AgentProviderConfig = {
+  id: 'qwen',
+  toolName: 'qwen',
+  title: 'Qwen Agent',
+  displayName: 'Qwen',
+  recommendedUse: 'Qwen',
+  cliEnvVar: 'QWEN_CLI_NAME',
+  defaultCliCommand: 'qwen',
+  promptDescription: 'The detailed natural language prompt for Qwen to execute.',
+  buildInvocation: ({ prompt }) => ({
+    args: ['-y', '-o', 'text', '--', prompt],
+  }),
+};
+
+export const AGENT_PROVIDERS: readonly AgentProviderConfig[] = [
+  claudeProvider,
+  codexProvider,
+  geminiProvider,
+  qwenProvider,
+];
 
 export function findClaudeCli(): string {
   return resolveCliCommand(claudeProvider);
@@ -246,6 +279,14 @@ export function findClaudeCli(): string {
 
 export function findCodexCli(): string {
   return resolveCliCommand(codexProvider);
+}
+
+export function findGeminiCli(): string {
+  return resolveCliCommand(geminiProvider);
+}
+
+export function findQwenCli(): string {
+  return resolveCliCommand(qwenProvider);
 }
 
 // Ensure spawnAsync is defined before the server class.
@@ -447,7 +488,25 @@ export class AgentCliServer {
 
 export const ClaudeCodeServer = AgentCliServer;
 
-if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
+function isDirectExecution(): boolean {
+  const entryPoint = process.argv[1];
+  if (typeof entryPoint !== 'string' || entryPoint.length === 0) {
+    return false;
+  }
+
+  try {
+    const resolvedEntryPoint = realpathSync(entryPoint);
+    if (typeof resolvedEntryPoint !== 'string' || resolvedEntryPoint.length === 0) {
+      return false;
+    }
+
+    return import.meta.url === pathToFileURL(resolvedEntryPoint).href;
+  } catch {
+    return false;
+  }
+}
+
+if (isDirectExecution()) {
   const server = new AgentCliServer();
   server.run().catch(console.error);
 }

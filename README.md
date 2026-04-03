@@ -7,7 +7,7 @@
 
 An MCP (Model Context Protocol) server that allows running agent CLIs in one-shot mode with permissions bypassed automatically.
 
-Did you notice that Cursor sometimes struggles with complex, multi-step edits or operations? This server exposes provider-backed MCP tools such as `claude_code` and `codex`, making those agents directly available for coding tasks while keeping the adapter layer extensible for future CLIs like Qwen or Gemini.
+Did you notice that Cursor sometimes struggles with complex, multi-step edits or operations? This server exposes provider-backed MCP tools such as `claude_code`, `codex`, `gemini`, and `qwen`, making those agents directly available for coding tasks while keeping the adapter layer extensible for future CLIs.
 
 <img src="assets/screenshot.png" width="300" alt="Screenshot">
 
@@ -17,6 +17,8 @@ This MCP server provides multiple provider-backed tools that can be used by LLMs
 
 - Run Claude Code with `--dangerously-skip-permissions`
 - Run Codex with `codex exec --dangerously-bypass-approvals-and-sandbox`
+- Run Gemini with `gemini -p ... -y -o text`
+- Run Qwen with `qwen -y -o text -- ...`
 - Add more providers by extending the registry in [`src/server.ts`](./src/server.ts)
 - Access file editing capabilities directly
 - Keep provider-specific execution details in one place
@@ -24,9 +26,9 @@ This MCP server provides multiple provider-backed tools that can be used by LLMs
 ## Benefits
 
 - Claude/Windsurf often have trouble editing files. Claude Code is better and faster at it.
-- Codex is now available through the same MCP server, so clients can offload tasks without a second server process.
+- Codex, Gemini, and Qwen are now available through the same MCP server, so clients can offload tasks without a second server process.
 - Multiple commands can be queued instead of direct execution. This saves context space so more important stuff is retained longer, fewer compacts happen.
-- File ops, git, or other operations don't need costy models. You can route work to Claude Code, Codex, and future providers as needed.
+- File ops, git, or other operations don't need costy models. You can route work to Claude Code, Codex, Gemini, Qwen, and future providers as needed.
 - Claude has wider system access and can do things that Cursor/Windsurf can't do (or believe they can't), so whenever they are stuck just ask them "use claude code" and it will usually un-stuck them.
 - Agents in Agents rules.
 
@@ -37,6 +39,8 @@ This MCP server provides multiple provider-backed tools that can be used by LLMs
 - Node.js v20 or later (Use fnm or nvm to install)
 - Claude CLI installed locally if you want to use `claude_code`
 - Codex CLI installed locally if you want to use `codex`
+- Gemini CLI installed locally if you want to use `gemini`
+- Qwen CLI installed locally if you want to use `qwen`
 
 ## Configuration
 
@@ -56,6 +60,16 @@ This MCP server provides multiple provider-backed tools that can be used by LLMs
 - `CODEX_CLI_NAME`: Override the Codex CLI binary name or provide an absolute path (default: `codex`).
   - Simple name: `CODEX_CLI_NAME=codex-nightly`
   - Absolute path: `CODEX_CLI_NAME=/path/to/custom/codex`
+  - Relative paths are rejected, the same as `CLAUDE_CLI_NAME`
+
+- `GEMINI_CLI_NAME`: Override the Gemini CLI binary name or provide an absolute path (default: `gemini`).
+  - Simple name: `GEMINI_CLI_NAME=gemini-nightly`
+  - Absolute path: `GEMINI_CLI_NAME=/path/to/custom/gemini`
+  - Relative paths are rejected, the same as `CLAUDE_CLI_NAME`
+
+- `QWEN_CLI_NAME`: Override the Qwen CLI binary name or provide an absolute path (default: `qwen`).
+  - Simple name: `QWEN_CLI_NAME=qwen-preview`
+  - Absolute path: `QWEN_CLI_NAME=/path/to/custom/qwen`
   - Relative paths are rejected, the same as `CLAUDE_CLI_NAME`
 
 - `MCP_CLAUDE_DEBUG`: Enable verbose debug logging for the server and all configured providers.
@@ -89,7 +103,7 @@ To use a custom Claude CLI binary name, you can specify the environment variable
     },
 ```
 
-To expose both Claude Code and Codex with custom binaries:
+To expose Claude Code, Codex, Gemini, and Qwen with custom binaries:
 
 ```json
     "agent-mcp": {
@@ -100,7 +114,9 @@ To expose both Claude Code and Codex with custom binaries:
       ],
       "env": {
         "CLAUDE_CLI_NAME": "claude-custom",
-        "CODEX_CLI_NAME": "codex"
+        "CODEX_CLI_NAME": "codex",
+        "GEMINI_CLI_NAME": "gemini",
+        "QWEN_CLI_NAME": "qwen"
       }
     },
 ```
@@ -134,6 +150,18 @@ claude --dangerously-skip-permissions
 
 ```bash
 codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check "hello"
+```
+
+### Gemini
+
+```bash
+gemini -p "hello" -y -o text
+```
+
+### Qwen
+
+```bash
+qwen -y -o text -- "hello"
 ```
 
 Follow the prompts to accept. Once this is done, the MCP server will be able to use the provider non-interactively.
@@ -186,6 +214,22 @@ Executes a prompt directly using `codex exec --dangerously-bypass-approvals-and-
 - `prompt` (string, required): The prompt to send to Codex.
 - `workFolder` (string, optional): Absolute working directory to use for file, git, and shell work.
 
+### `gemini`
+
+Executes a prompt directly using `gemini -p ... -y -o text`.
+
+**Arguments:**
+- `prompt` (string, required): The prompt to send to Gemini.
+- `workFolder` (string, optional): Absolute working directory to use for file, git, and shell work.
+
+### `qwen`
+
+Executes a prompt directly using `qwen -y -o text -- <prompt>`.
+
+**Arguments:**
+- `prompt` (string, required): The prompt to send to Qwen.
+- `workFolder` (string, optional): Absolute working directory to use for file, git, and shell work.
+
 **Example MCP Request:**
 ```json
 {
@@ -196,7 +240,7 @@ Executes a prompt directly using `codex exec --dangerously-bypass-approvals-and-
 }
 ```
 
-You can call Codex the same way by switching `toolName` to `agent-mcp:codex`.
+You can call the other providers the same way by switching `toolName` to `agent-mcp:codex`, `agent-mcp:gemini`, or `agent-mcp:qwen`.
 
 ### Examples
 
@@ -280,7 +324,7 @@ The server is now organized around a provider registry in [`src/server.ts`](./sr
 ## Troubleshooting
 
 - **"Command not found" (`agent-mcp`):** If installed globally, ensure the npm global bin directory is in your system's PATH. If using `npx`, ensure `npx` itself is working.
-- **"Command not found" (provider CLI):** Ensure the underlying CLI is installed correctly and that `CLAUDE_CLI_NAME` or `CODEX_CLI_NAME` points to a valid executable when overridden.
+- **"Command not found" (provider CLI):** Ensure the underlying CLI is installed correctly and that `CLAUDE_CLI_NAME`, `CODEX_CLI_NAME`, `GEMINI_CLI_NAME`, or `QWEN_CLI_NAME` points to a valid executable when overridden.
 - **Permissions Issues:** Make sure you've run the "Important First-Time Setup" step.
 - **JSON Errors from Server:** If `MCP_CLAUDE_DEBUG` is `true`, error messages or logs might interfere with MCP's JSON parsing. Set to `false` for normal operation.
 - **ESM/Import Errors:** Ensure you are using Node.js v20 or later.

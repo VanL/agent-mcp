@@ -171,6 +171,70 @@ describe('ClaudeCodeServer Unit Tests', () => {
     });
   });
 
+  describe('findGeminiCli function', () => {
+    it('should fallback to PATH when GEMINI_CLI_NAME is not set', async () => {
+      const module = await import('../server.js');
+      // @ts-ignore
+      const findGeminiCli = module.default?.findGeminiCli || module.findGeminiCli;
+
+      const result = findGeminiCli();
+      expect(result).toBe('gemini');
+    });
+
+    it('should use custom name from GEMINI_CLI_NAME', async () => {
+      process.env.GEMINI_CLI_NAME = 'gemini-beta';
+
+      const module = await import('../server.js');
+      // @ts-ignore
+      const findGeminiCli = module.default?.findGeminiCli || module.findGeminiCli;
+
+      const result = findGeminiCli();
+      expect(result).toBe('gemini-beta');
+    });
+
+    it('should throw error for relative paths in GEMINI_CLI_NAME', async () => {
+      process.env.GEMINI_CLI_NAME = './relative/path/gemini';
+
+      const module = await import('../server.js');
+      // @ts-ignore
+      const findGeminiCli = module.default?.findGeminiCli || module.findGeminiCli;
+
+      expect(() => findGeminiCli()).toThrow('Invalid GEMINI_CLI_NAME: Relative paths are not allowed');
+    });
+  });
+
+  describe('findQwenCli function', () => {
+    it('should fallback to PATH when QWEN_CLI_NAME is not set', async () => {
+      const module = await import('../server.js');
+      // @ts-ignore
+      const findQwenCli = module.default?.findQwenCli || module.findQwenCli;
+
+      const result = findQwenCli();
+      expect(result).toBe('qwen');
+    });
+
+    it('should use custom name from QWEN_CLI_NAME', async () => {
+      process.env.QWEN_CLI_NAME = 'qwen-preview';
+
+      const module = await import('../server.js');
+      // @ts-ignore
+      const findQwenCli = module.default?.findQwenCli || module.findQwenCli;
+
+      const result = findQwenCli();
+      expect(result).toBe('qwen-preview');
+    });
+
+    it('should throw error for relative paths in QWEN_CLI_NAME', async () => {
+      process.env.QWEN_CLI_NAME = './relative/path/qwen';
+
+      const module = await import('../server.js');
+      // @ts-ignore
+      const findQwenCli = module.default?.findQwenCli || module.findQwenCli;
+
+      expect(() => findQwenCli()).toThrow('Invalid QWEN_CLI_NAME: Relative paths are not allowed');
+    });
+  });
+
   describe('spawnAsync function', () => {
     let mockProcess: any;
     
@@ -435,11 +499,15 @@ describe('ClaudeCodeServer Unit Tests', () => {
       const handler = listToolsCall[1];
       const result = await handler();
       
-      expect(result.tools).toHaveLength(2);
+      expect(result.tools).toHaveLength(4);
       expect(result.tools[0].name).toBe('claude_code');
       expect(result.tools[0].description).toContain('Claude Code Agent');
       expect(result.tools[1].name).toBe('codex');
       expect(result.tools[1].description).toContain('Codex Agent');
+      expect(result.tools[2].name).toBe('gemini');
+      expect(result.tools[2].description).toContain('Gemini Agent');
+      expect(result.tools[3].name).toBe('qwen');
+      expect(result.tools[3].description).toContain('Qwen Agent');
     });
 
     it('should handle CallToolRequest', async () => {

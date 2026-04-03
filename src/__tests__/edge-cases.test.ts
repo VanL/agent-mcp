@@ -3,7 +3,13 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { MCPTestClient } from './utils/mcp-client.js';
-import { getSharedMock, getSharedCodexMock, cleanupSharedMock } from './utils/persistent-mock.js';
+import {
+  getSharedMock,
+  getSharedCodexMock,
+  getSharedGeminiMock,
+  getSharedQwenMock,
+  cleanupSharedMock,
+} from './utils/persistent-mock.js';
 
 describe('Claude Code Edge Cases', () => {
   let client: MCPTestClient;
@@ -14,6 +20,8 @@ describe('Claude Code Edge Cases', () => {
     // Ensure mock exists
     await getSharedMock();
     await getSharedCodexMock();
+    await getSharedGeminiMock();
+    await getSharedQwenMock();
     
     // Create test directory
     testDir = mkdtempSync(join(tmpdir(), 'agent-mcp-edge-'));
@@ -23,6 +31,8 @@ describe('Claude Code Edge Cases', () => {
       MCP_CLAUDE_DEBUG: 'true',
       CLAUDE_CLI_NAME: '/tmp/agent-cli-test-mock/claudeMocked',
       CODEX_CLI_NAME: '/tmp/agent-cli-test-mock/codexMocked',
+      GEMINI_CLI_NAME: '/tmp/agent-cli-test-mock/geminiMocked',
+      QWEN_CLI_NAME: '/tmp/agent-cli-test-mock/qwenMocked',
     });
     
     await client.connect();

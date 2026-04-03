@@ -1,7 +1,7 @@
 {
   "name": "agent-mcp",
   "version": "1.10.12",
-  "description": "Provider-backed MCP server for Claude Code, Codex, and future agent CLIs",
+  "description": "Provider-backed MCP server for Claude Code, Codex, Gemini, Qwen, and future agent CLIs",
   "author": "Peter Steinberger",
   "license": "MIT",
   "main": "dist/server.js",
@@ -42,6 +42,8 @@
     "model-context-protocol",
     "claude",
     "codex",
+    "gemini",
+    "qwen",
     "ai",
     "llm",
     "tools"

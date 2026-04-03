@@ -10,11 +10,13 @@ The e2e tests validate the server's provider adapters in real-world scenarios. S
 
 The e2e tests are organized into several files:
 
-- `src/__tests__/e2e.test.ts` - Main e2e test suite with mock Claude CLI
+- `src/__tests__/e2e.test.ts` - Main e2e test suite with mock provider CLIs
 - `src/__tests__/edge-cases.test.ts` - Edge case and error handling tests
 - `src/__tests__/utils/mcp-client.ts` - Mock MCP client for testing
 - `src/__tests__/utils/claude-mock.ts` - Mock Claude CLI implementation
 - `src/__tests__/utils/codex-mock.ts` - Mock Codex CLI implementation
+- `src/__tests__/utils/gemini-mock.ts` - Mock Gemini CLI implementation
+- `src/__tests__/utils/qwen-mock.ts` - Mock Qwen CLI implementation
 
 ## Running Tests
 
@@ -117,7 +119,7 @@ To debug e2e tests:
 
 ## CI/CD Considerations
 
-The e2e tests are designed to run in CI environments without Claude CLI:
+The e2e tests are designed to run in CI environments without the real provider CLIs:
 
 - Mock tests run automatically in CI
 - Integration tests are skipped unless explicitly enabled
@@ -137,13 +139,13 @@ The e2e tests are designed to run in CI environments without Claude CLI:
 - Verify the mock path matches the server's expectations
 
 ### Integration Tests Failing
-- Ensure Claude CLI is installed and authenticated
+- Ensure the relevant provider CLI is installed and authenticated
 - Check that you're running the local test command
-- Verify Claude CLI is accessible in your PATH
+- Verify the provider CLI is accessible in your PATH
 
 ## Future Improvements
 
 - Add performance benchmarking tests
 - Implement stress testing scenarios
-- Add tests for specific Claude Code features
+- Add tests for specific provider features
 - Create visual regression tests for output formatting

@@ -3,7 +3,12 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { MCPTestClient } from './utils/mcp-client.js';
-import { getSharedMock, getSharedCodexMock } from './utils/persistent-mock.js';
+import {
+  getSharedMock,
+  getSharedCodexMock,
+  getSharedGeminiMock,
+  getSharedQwenMock,
+} from './utils/persistent-mock.js';
 
 describe('Version Print on First Use', () => {
   let client: MCPTestClient;
@@ -15,6 +20,8 @@ describe('Version Print on First Use', () => {
     // Ensure mock exists
     await getSharedMock();
     await getSharedCodexMock();
+    await getSharedGeminiMock();
+    await getSharedQwenMock();
     
     // Create a temporary directory for test files
     testDir = mkdtempSync(join(tmpdir(), 'agent-mcp-test-'));
@@ -26,6 +33,8 @@ describe('Version Print on First Use', () => {
     client = new MCPTestClient(serverPath, {
       CLAUDE_CLI_NAME: '/tmp/agent-cli-test-mock/claudeMocked',
       CODEX_CLI_NAME: '/tmp/agent-cli-test-mock/codexMocked',
+      GEMINI_CLI_NAME: '/tmp/agent-cli-test-mock/geminiMocked',
+      QWEN_CLI_NAME: '/tmp/agent-cli-test-mock/qwenMocked',
     });
     
     await client.connect();

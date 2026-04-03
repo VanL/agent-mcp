@@ -3,7 +3,13 @@ import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { MCPTestClient } from './utils/mcp-client.js';
-import { getSharedMock, getSharedCodexMock, cleanupSharedMock } from './utils/persistent-mock.js';
+import {
+  getSharedMock,
+  getSharedCodexMock,
+  getSharedGeminiMock,
+  getSharedQwenMock,
+  cleanupSharedMock,
+} from './utils/persistent-mock.js';
 
 describe('agent-mcp E2E Tests', () => {
   let client: MCPTestClient;
@@ -14,6 +20,8 @@ describe('agent-mcp E2E Tests', () => {
     // Ensure mock exists
     await getSharedMock();
     await getSharedCodexMock();
+    await getSharedGeminiMock();
+    await getSharedQwenMock();
     
     // Create a temporary directory for test files
     testDir = mkdtempSync(join(tmpdir(), 'agent-mcp-test-'));
@@ -23,6 +31,8 @@ describe('agent-mcp E2E Tests', () => {
       MCP_CLAUDE_DEBUG: 'true',
       CLAUDE_CLI_NAME: '/tmp/agent-cli-test-mock/claudeMocked',
       CODEX_CLI_NAME: '/tmp/agent-cli-test-mock/codexMocked',
+      GEMINI_CLI_NAME: '/tmp/agent-cli-test-mock/geminiMocked',
+      QWEN_CLI_NAME: '/tmp/agent-cli-test-mock/qwenMocked',
     });
     
     await client.connect();
@@ -42,10 +52,10 @@ describe('agent-mcp E2E Tests', () => {
   });
 
   describe('Tool Registration', () => {
-    it('should register claude_code and codex tools', async () => {
+    it('should register claude_code, codex, gemini, and qwen tools', async () => {
       const tools = await client.listTools();
       
-      expect(tools).toHaveLength(2);
+      expect(tools).toHaveLength(4);
       expect(tools[0]).toEqual({
         name: 'claude_code',
         description: expect.stringContaining('Claude Code Agent'),
@@ -83,6 +93,44 @@ describe('agent-mcp E2E Tests', () => {
           required: ['prompt'],
         },
       });
+
+      expect(tools[2]).toEqual({
+        name: 'gemini',
+        description: expect.stringContaining('Gemini Agent'),
+        inputSchema: {
+          type: 'object',
+          properties: {
+            prompt: {
+              type: 'string',
+              description: 'The detailed natural language prompt for Gemini to execute.',
+            },
+            workFolder: {
+              type: 'string',
+              description: expect.stringContaining('working directory'),
+            },
+          },
+          required: ['prompt'],
+        },
+      });
+
+      expect(tools[3]).toEqual({
+        name: 'qwen',
+        description: expect.stringContaining('Qwen Agent'),
+        inputSchema: {
+          type: 'object',
+          properties: {
+            prompt: {
+              type: 'string',
+              description: 'The detailed natural language prompt for Qwen to execute.',
+            },
+            workFolder: {
+              type: 'string',
+              description: expect.stringContaining('working directory'),
+            },
+          },
+          required: ['prompt'],
+        },
+      });
     });
   });
 
@@ -101,6 +149,30 @@ describe('agent-mcp E2E Tests', () => {
 
     it('should execute a simple Codex prompt', async () => {
       const response = await client.callTool('codex', {
+        prompt: 'create a file called test.txt with content "Hello World"',
+        workFolder: testDir,
+      });
+
+      expect(response).toEqual([{
+        type: 'text',
+        text: expect.stringContaining('successfully'),
+      }]);
+    });
+
+    it('should execute a simple Gemini prompt', async () => {
+      const response = await client.callTool('gemini', {
+        prompt: 'create a file called test.txt with content "Hello World"',
+        workFolder: testDir,
+      });
+
+      expect(response).toEqual([{
+        type: 'text',
+        text: expect.stringContaining('successfully'),
+      }]);
+    });
+
+    it('should execute a simple Qwen prompt', async () => {
+      const response = await client.callTool('qwen', {
         prompt: 'create a file called test.txt with content "Hello World"',
         workFolder: testDir,
       });
