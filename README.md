@@ -105,6 +105,18 @@ To expose both Claude Code and Codex with custom binaries:
     },
 ```
 
+If you prefer Bun and want the package source to come directly from GitHub instead of npm, install it from the repository and trust it so Bun can run the package build during install:
+
+```bash
+bun add -g --trust agent-mcp@github:VanL/agent-mcp
+```
+
+To update a Bun global install that uses the GitHub source:
+
+```bash
+bun add -g --trust agent-mcp@github:VanL/agent-mcp
+```
+
 ## Important First-Time Setup: Accepting Permissions
 
 Before the MCP server can successfully use a provider tool, run that provider's CLI manually once, authenticate, and accept any required terms or bypass warnings.
