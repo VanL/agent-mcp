@@ -5,7 +5,7 @@
 [![npm package](https://img.shields.io/npm/v/agent-mcp)](https://www.npmjs.com/package/agent-mcp)
 [![View changelog](https://img.shields.io/badge/Explore%20Changelog-brightgreen)](/CHANGELOG.md)
 
-An MCP (Model Context Protocol) server that allows running agent CLIs in one-shot mode with permissions bypassed automatically.
+An MCP (Model Context Protocol) server that exposes multiple agent CLIs as MCP tools and runs them in one-shot mode with provider-specific bypass flags.
 
 Did you notice that Cursor sometimes struggles with complex, multi-step edits or operations? This server exposes provider-backed MCP tools such as `claude_code`, `codex`, `gemini`, and `qwen`, making those agents directly available for coding tasks while keeping the adapter layer extensible for future CLIs.
 
@@ -25,11 +25,10 @@ This MCP server provides multiple provider-backed tools that can be used by LLMs
 
 ## Benefits
 
-- Claude/Windsurf often have trouble editing files. Claude Code is better and faster at it.
-- Codex, Gemini, and Qwen are now available through the same MCP server, so clients can offload tasks without a second server process.
-- Multiple commands can be queued instead of direct execution. This saves context space so more important stuff is retained longer, fewer compacts happen.
-- File ops, git, or other operations don't need costy models. You can route work to Claude Code, Codex, Gemini, Qwen, and future providers as needed.
-- Claude has wider system access and can do things that Cursor/Windsurf can't do (or believe they can't), so whenever they are stuck just ask them "use claude code" and it will usually un-stuck them.
+- LLM clients often struggle with longer file edits, git operations, and repo workflows. This server lets them hand those jobs to purpose-built agent CLIs.
+- Claude Code, Codex, Gemini, and Qwen are available through one MCP server, so clients can switch tools without standing up separate adapters.
+- Multiple commands can be queued instead of direct execution. This saves context space so more important stuff is retained longer and fewer compacts happen.
+- File ops, git, and shell work do not need your primary chat model. You can route work to the provider that fits best and keep the adapter layer extensible.
 - Agents in Agents rules.
 
 <img src="assets/agents_in_agents_meme.jpg" alt="Agents in Agents Meme">
@@ -50,11 +49,11 @@ This MCP server provides multiple provider-backed tools that can be used by LLMs
   - Using custom Claude CLI wrappers
   - Testing with mocked binaries
   - Running multiple Claude CLI versions side by side
-  
+
   Supported formats:
   - Simple name: `CLAUDE_CLI_NAME=claude-custom` or `CLAUDE_CLI_NAME=claude-v2`
   - Absolute path: `CLAUDE_CLI_NAME=/path/to/custom/claude`
-  
+
   Relative paths (e.g., `./claude` or `../claude`) are not allowed and will throw an error.
 
 - `CODEX_CLI_NAME`: Override the Codex CLI binary name or provide an absolute path (default: `codex`).
@@ -88,7 +87,7 @@ The recommended way to use this server is by installing it by using `npx`.
     },
 ```
 
-To use a custom Claude CLI binary name, you can specify the environment variable:
+To use a custom provider CLI binary name, you can specify the relevant environment variable:
 
 ```json
     "agent-mcp": {
@@ -142,6 +141,7 @@ Before the MCP server can successfully use a provider tool, run that provider's 
 ```bash
 npm install -g @anthropic-ai/claude-code
 ```
+
 ```bash
 claude --dangerously-skip-permissions
 ```
@@ -179,6 +179,7 @@ The configuration is typically done in a JSON file. The name and location can va
 #### Cursor
 
 Cursor uses `mcp.json`.
+
 - **macOS:** `~/.cursor/mcp.json`
 - **Windows:** `%APPDATA%\\Cursor\\mcp.json`
 - **Linux:** `~/.config/cursor/mcp.json`
@@ -186,6 +187,7 @@ Cursor uses `mcp.json`.
 #### Windsurf
 
 Windsurf users use `mcp_config.json`
+
 - **macOS:** `~/.codeium/windsurf/mcp_config.json`
 - **Windows:** `%APPDATA%\\Codeium\\windsurf\\mcp_config.json`
 - **Linux:** `~/.config/.codeium/windsurf/mcp_config.json`
@@ -203,6 +205,7 @@ This server exposes provider-backed tools:
 Executes a prompt directly using the Claude Code CLI with `--dangerously-skip-permissions`.
 
 **Arguments:**
+
 - `prompt` (string, required): The prompt to send to Claude Code.
 - `workFolder` (string, optional): Absolute working directory to use for file, git, and shell work.
 
@@ -211,6 +214,7 @@ Executes a prompt directly using the Claude Code CLI with `--dangerously-skip-pe
 Executes a prompt directly using `codex exec --dangerously-bypass-approvals-and-sandbox`.
 
 **Arguments:**
+
 - `prompt` (string, required): The prompt to send to Codex.
 - `workFolder` (string, optional): Absolute working directory to use for file, git, and shell work.
 
@@ -219,6 +223,7 @@ Executes a prompt directly using `codex exec --dangerously-bypass-approvals-and-
 Executes a prompt directly using `gemini -p ... -y -o text`.
 
 **Arguments:**
+
 - `prompt` (string, required): The prompt to send to Gemini.
 - `workFolder` (string, optional): Absolute working directory to use for file, git, and shell work.
 
@@ -227,10 +232,12 @@ Executes a prompt directly using `gemini -p ... -y -o text`.
 Executes a prompt directly using `qwen -p ... -y -o text`.
 
 **Arguments:**
+
 - `prompt` (string, required): The prompt to send to Qwen.
 - `workFolder` (string, optional): Absolute working directory to use for file, git, and shell work.
 
 **Example MCP Request:**
+
 ```json
 {
   "toolName": "agent-mcp:claude_code",
@@ -269,37 +276,37 @@ Here's an example of the Claude Code tool listing files in a directory:
 This server, through its provider-backed tools, unlocks a wide range of capabilities by giving your AI direct access to agent CLIs. Here are some examples of what you can achieve:
 
 1.  **Code Generation, Analysis & Refactoring:**
-    -   `"Generate a Python script to parse CSV data and output JSON."`
-    -   `"Analyze my_script.py for potential bugs and suggest improvements."`
+    - `"Generate a Python script to parse CSV data and output JSON."`
+    - `"Analyze my_script.py for potential bugs and suggest improvements."`
 
 2.  **File System Operations (Create, Read, Edit, Manage):**
-    -   **Creating Files:** `"Your work folder is /Users/steipete/my_project\n\nCreate a new file named 'config.yml' in the 'app/settings' directory with the following content:\nport: 8080\ndatabase: main_db"`
-    -   **Editing Files:** `"Your work folder is /Users/steipete/my_project\n\nEdit file 'public/css/style.css': Add a new CSS rule at the end to make all 'h2' elements have a 'color: navy'."`
-    -   **Moving/Copying/Deleting:** `"Your work folder is /Users/steipete/my_project\n\nMove the file 'report.docx' from the 'drafts' folder to the 'final_reports' folder and rename it to 'Q1_Report_Final.docx'."`
+    - **Creating Files:** `"Your work folder is /Users/you/my_project\n\nCreate a new file named 'config.yml' in the 'app/settings' directory with the following content:\nport: 8080\ndatabase: main_db"`
+    - **Editing Files:** `"Your work folder is /Users/you/my_project\n\nEdit file 'public/css/style.css': Add a new CSS rule at the end to make all 'h2' elements have a 'color: navy'."`
+    - **Moving/Copying/Deleting:** `"Your work folder is /Users/you/my_project\n\nMove the file 'report.docx' from the 'drafts' folder to the 'final_reports' folder and rename it to 'Q1_Report_Final.docx'."`
 
 3.  **Version Control (Git):**
-    -   `"Your work folder is /Users/steipete/my_project\n\n1. Stage the file 'src/main.java'.\n2. Commit the changes with the message 'feat: Implement user authentication'.\n3. Push the commit to the 'develop' branch on origin."`
+    - `"Your work folder is /Users/you/my_project\n\n1. Stage the file 'src/main.java'.\n2. Commit the changes with the message 'feat: Implement user authentication'.\n3. Push the commit to the 'develop' branch on origin."`
 
 4.  **Running Terminal Commands:**
-    -   `"Your work folder is /Users/steipete/my_project/frontend\n\nRun the command 'npm run build'."`
-    -   `"Open the URL https://developer.mozilla.org in my default web browser."`
+    - `"Your work folder is /Users/you/my_project/frontend\n\nRun the command 'npm run build'."`
+    - `"Open the URL https://developer.mozilla.org in my default web browser."`
 
 5.  **Web Search & Summarization:**
-    -   `"Search the web for 'benefits of server-side rendering' and provide a concise summary."`
+    - `"Search the web for 'benefits of server-side rendering' and provide a concise summary."`
 
 6.  **Complex Multi-Step Workflows:**
-    -   Automate version bumps, update changelogs, and tag releases: `"Your work folder is /Users/steipete/my_project\n\nFollow these steps: 1. Update the version in package.json to 2.5.0. 2. Add a new section to CHANGELOG.md for version 2.5.0 with the heading '### Added' and list 'New feature X'. 3. Stage package.json and CHANGELOG.md. 4. Commit with message 'release: version 2.5.0'. 5. Push the commit. 6. Create and push a git tag v2.5.0."`
+    - Automate version bumps, update changelogs, and tag releases: `"Your work folder is /Users/you/my_project\n\nFollow these steps: 1. Update the version in package.json to 2.5.0. 2. Add a new section to CHANGELOG.md for version 2.5.0 with the heading '### Added' and list 'New feature X'. 3. Stage package.json and CHANGELOG.md. 4. Commit with message 'release: version 2.5.0'. 5. Push the commit. 6. Create and push a git tag v2.5.0."`
 
     <img src="assets/multistep_example.png" alt="Complex multi-step operation example" width="50%">
 
 7.  **Repairing Files with Syntax Errors:**
-    -   `"Your work folder is /path/to/project\n\nThe file 'src/utils/parser.js' has syntax errors after a recent complex edit that broke its structure. Please analyze it, identify the syntax errors, and correct the file to make it valid JavaScript again, ensuring the original logic is preserved as much as possible."`
+    - `"Your work folder is /path/to/project\n\nThe file 'src/utils/parser.js' has syntax errors after a recent complex edit that broke its structure. Please analyze it, identify the syntax errors, and correct the file to make it valid JavaScript again, ensuring the original logic is preserved as much as possible."`
 
 8.  **Interacting with GitHub (e.g., Creating a Pull Request):**
-    -   `"Your work folder is /Users/steipete/my_project\n\nCreate a GitHub Pull Request in the repository 'owner/repo' from the 'feature-branch' to the 'main' branch. Title: 'feat: Implement new login flow'. Body: 'This PR adds a new and improved login experience for users.'"`
+    - `"Your work folder is /Users/you/my_project\n\nCreate a GitHub Pull Request in the repository 'owner/repo' from the 'feature-branch' to the 'main' branch. Title: 'feat: Implement new login flow'. Body: 'This PR adds a new and improved login experience for users.'"`
 
 9.  **Interacting with GitHub (e.g., Checking PR CI Status):**
-    -   `"Your work folder is /Users/steipete/my_project\n\nCheck the status of CI checks for Pull Request #42 in the GitHub repository 'owner/repo'. Report if they have passed, failed, or are still running."`
+    - `"Your work folder is /Users/you/my_project\n\nCheck the status of CI checks for Pull Request #42 in the GitHub repository 'owner/repo'. Report if they have passed, failed, or are still running."`
 
 ### Correcting GitHub Actions Workflow
 
@@ -363,9 +370,9 @@ For detailed testing documentation, see our [E2E Testing Guide](./docs/e2e-testi
 
 The server's behavior can be customized using these environment variables:
 
-- `CLAUDE_CLI_PATH`: Absolute path to the Claude CLI executable.
-  - Default: Checks `~/.claude/local/claude`, then falls back to `claude` (expecting it in PATH).
+- `CLAUDE_CLI_NAME`, `CODEX_CLI_NAME`, `GEMINI_CLI_NAME`, `QWEN_CLI_NAME`: Override the executable name or provide an absolute path for each provider CLI.
 - `MCP_CLAUDE_DEBUG`: Set to `true` for verbose debug logging from this MCP server. Default: `false`.
+- Provider-specific auth variables such as `GEMINI_API_KEY` or `OPENROUTER_API_KEY` should be passed through the MCP server environment when the underlying CLI requires them.
 
 These can be set in your shell environment or within the `env` block of your `mcp.json` server configuration (though the `env` block in `mcp.json` examples was removed for simplicity, it's still a valid way to set them for the server process if needed).
 
