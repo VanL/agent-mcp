@@ -9,8 +9,8 @@
     "agent-mcp": "dist/server.js"
   },
   "scripts": {
-    "build": "tsc",
-    "prepare": "tsc",
+    "build": "tsc && node scripts/ensure-bin-executable.mjs",
+    "prepare": "tsc && node scripts/ensure-bin-executable.mjs",
     "start": "node dist/server.js",
     "dev": "tsx src/server.ts",
     "test": "npm run build && vitest",
