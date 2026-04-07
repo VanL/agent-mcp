@@ -6,7 +6,7 @@
   "license": "MIT",
   "main": "dist/server.js",
   "bin": {
-    "agent-mcp": "dist/server.js"
+    "agent-mcp": "bin/agent-mcp"
   },
   "scripts": {
     "build": "tsc && node scripts/ensure-bin-executable.mjs",

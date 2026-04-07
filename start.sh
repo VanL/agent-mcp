@@ -11,8 +11,17 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$SCRIPT_DIR"
 
 # Run the compiled JavaScript file for npm packages OR TypeScript for local development
+if command -v bun >/dev/null 2>&1; then
+    RUNTIME="bun"
+elif command -v node >/dev/null 2>&1; then
+    RUNTIME="node"
+else
+    echo "Error: Neither bun nor node found in PATH"
+    exit 127
+fi
+
 if [ -f "dist/server.js" ]; then
-    node dist/server.js
+    "$RUNTIME" dist/server.js
 elif [ -f "src/server.ts" ] && command -v tsx >/dev/null 2>&1; then
     npx tsx src/server.ts
 else
