@@ -602,6 +602,25 @@ describe("ClaudeCodeServer Unit Tests", () => {
       ]);
     });
 
+    it("should run JavaScript provider CLIs through the current runtime", async () => {
+      const module = await import("../server.js");
+      const resolveProviderExecution = getServerExport<
+        (cliCommand: string) => {
+          cliCommand: string;
+          cliArgsPrefix: string[];
+          cliCommandDisplay: string;
+        }
+      >(module, "resolveProviderExecution");
+
+      const result = resolveProviderExecution("/opt/tools/codex.js");
+
+      expect(result).toEqual({
+        cliCommand: process.execPath,
+        cliArgsPrefix: ["/opt/tools/codex.js"],
+        cliCommandDisplay: `${process.execPath} /opt/tools/codex.js`,
+      });
+    });
+
     it("should handle CallToolRequest", async () => {
       mockHomedir.mockReturnValue("/home/user");
       mockExistsSync.mockReturnValue(true);

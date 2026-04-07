@@ -75,6 +75,8 @@ interface AgentProviderConfig {
 
 interface AgentProviderRuntime extends AgentProviderConfig {
   cliCommand: string;
+  cliArgsPrefix: string[];
+  cliCommandDisplay: string;
 }
 
 type InstalledCliPathMap = Partial<Record<AgentProviderConfig["id"], string>>;
@@ -339,6 +341,37 @@ function resolveAvailableCliCommand(
   return null;
 }
 
+function shouldInvokeWithServerRuntime(cliCommand: string): boolean {
+  if (!path.isAbsolute(cliCommand)) {
+    return false;
+  }
+
+  return [".js", ".cjs", ".mjs"].includes(
+    path.extname(cliCommand).toLowerCase(),
+  );
+}
+
+export function resolveProviderExecution(
+  cliCommand: string,
+): Pick<
+  AgentProviderRuntime,
+  "cliCommand" | "cliArgsPrefix" | "cliCommandDisplay"
+> {
+  if (shouldInvokeWithServerRuntime(cliCommand)) {
+    return {
+      cliCommand: process.execPath,
+      cliArgsPrefix: [cliCommand],
+      cliCommandDisplay: `${process.execPath} ${cliCommand}`,
+    };
+  }
+
+  return {
+    cliCommand,
+    cliArgsPrefix: [],
+    cliCommandDisplay: cliCommand,
+  };
+}
+
 function parseToolArguments(
   toolArguments: unknown,
   toolName: string,
@@ -586,13 +619,15 @@ export class AgentCliServer {
         return [];
       }
 
+      const execution = resolveProviderExecution(cliCommand);
+
       const runtime = {
         ...provider,
-        cliCommand,
+        ...execution,
       };
 
       console.error(
-        `[Setup] Using ${provider.displayName} CLI command/path: ${runtime.cliCommand} (${provider.toolName})`,
+        `[Setup] Using ${provider.displayName} CLI command/path: ${runtime.cliCommandDisplay} (${provider.toolName})`,
       );
       return [runtime];
     });
@@ -690,12 +725,16 @@ export class AgentCliServer {
           });
 
           try {
+            const executionArgs = [
+              ...provider.cliArgsPrefix,
+              ...invocation.args,
+            ];
             debugLog(
-              `[Debug] Invoking ${provider.displayName} CLI: ${provider.cliCommand} ${invocation.args.join(" ")}`,
+              `[Debug] Invoking ${provider.displayName} CLI: ${provider.cliCommandDisplay} ${executionArgs.join(" ")}`,
             );
             const result = await spawnAsync(
               provider.cliCommand,
-              invocation.args,
+              executionArgs,
               {
                 timeout: executionTimeoutMs,
                 cwd: effectiveCwd,
