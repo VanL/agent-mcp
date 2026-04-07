@@ -271,6 +271,7 @@ describe("ClaudeCodeServer Unit Tests", () => {
       mockProcess = new EventEmitter() as any;
       mockProcess.stdout = new EventEmitter();
       mockProcess.stderr = new EventEmitter();
+      mockProcess.kill = vi.fn(() => true);
       mockProcess.stdout.on = vi.fn((event, handler) => {
         mockProcess.stdout[event] = handler;
       });
@@ -345,20 +346,28 @@ describe("ClaudeCodeServer Unit Tests", () => {
       await expect(promise).rejects.toThrow("Spawn error");
     });
 
-    it("should respect timeout option", async () => {
+    it("should enforce timeout option with a hard kill", async () => {
       const module = await import("../server.js");
       // @ts-ignore
       const { spawnAsync } = module;
 
-      spawnAsync("sleep", ["10"], { timeout: 100 });
+      vi.useFakeTimers();
 
-      expect(mockSpawn).toHaveBeenCalledWith(
-        "sleep",
-        ["10"],
-        expect.objectContaining({
-          timeout: 100,
-        }),
-      );
+      try {
+        const promise = spawnAsync("sleep", ["10"], { timeout: 100 });
+        await vi.advanceTimersByTimeAsync(100);
+
+        expect(mockProcess.kill).toHaveBeenCalledWith("SIGKILL");
+
+        mockProcess.emit("close", null, "SIGKILL");
+
+        await expect(promise).rejects.toMatchObject({
+          code: "ETIMEDOUT",
+          signal: "SIGKILL",
+        });
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("should use provided cwd option", async () => {

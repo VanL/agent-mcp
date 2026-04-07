@@ -366,23 +366,79 @@ export function findQwenCli() {
 export async function spawnAsync(command, args, options) {
     return new Promise((resolve, reject) => {
         debugLog(`[Spawn] Running command: ${command} ${args.join(" ")}`);
-        const process = spawn(command, args, {
+        const childProcess = spawn(command, args, {
             shell: false,
-            timeout: options?.timeout,
             cwd: options?.cwd,
             stdio: ["ignore", "pipe", "pipe"],
+            detached: process.platform !== "win32",
         });
         let stdout = "";
         let stderr = "";
-        process.stdout.on("data", (data) => {
+        let settled = false;
+        let timedOut = false;
+        const buildTimeoutError = (signal) => {
+            const timeoutMs = options?.timeout ?? 0;
+            const error = new Error(`Command timed out after ${timeoutMs}ms\nSignal: ${signal ?? "unknown"}\nStderr: ${stderr.trim()}\nStdout: ${stdout.trim()}`);
+            error.code = "ETIMEDOUT";
+            error.signal = signal ?? null;
+            error.stderr = stderr;
+            error.stdout = stdout;
+            return error;
+        };
+        const finishResolve = (result) => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            resolve(result);
+        };
+        const finishReject = (error) => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            reject(error);
+        };
+        const timeoutHandle = typeof options?.timeout === "number" && options.timeout > 0
+            ? setTimeout(() => {
+                if (settled) {
+                    return;
+                }
+                timedOut = true;
+                debugLog(`[Spawn Timeout] Killing command after ${options.timeout}ms: ${command}`);
+                if (process.platform !== "win32" &&
+                    typeof childProcess.pid === "number") {
+                    try {
+                        process.kill(-childProcess.pid, "SIGKILL");
+                        return;
+                    }
+                    catch (error) {
+                        debugLog("[Spawn Timeout] Failed to kill process group, falling back to child process kill:", error);
+                    }
+                }
+                childProcess.kill("SIGKILL");
+            }, options.timeout)
+            : null;
+        const clearTimeoutHandle = () => {
+            if (timeoutHandle) {
+                clearTimeout(timeoutHandle);
+            }
+        };
+        childProcess.stdout.on("data", (data) => {
             stdout += data.toString();
         });
-        process.stderr.on("data", (data) => {
+        childProcess.stderr.on("data", (data) => {
             stderr += data.toString();
             debugLog(`[Spawn Stderr Chunk] ${data.toString()}`);
         });
-        process.on("error", (error) => {
+        childProcess.on("error", (error) => {
+            clearTimeoutHandle();
             debugLog("[Spawn Error Event] Full error object:", error);
+            if (timedOut) {
+                finishReject(buildTimeoutError(error
+                    .signal));
+                return;
+            }
             let errorMessage = `Spawn error: ${error.message}`;
             if (error.path) {
                 errorMessage += ` | Path: ${error.path}`;
@@ -391,17 +447,23 @@ export async function spawnAsync(command, args, options) {
                 errorMessage += ` | Syscall: ${error.syscall}`;
             }
             errorMessage += `\nStderr: ${stderr.trim()}`;
-            reject(new Error(errorMessage));
+            finishReject(new Error(errorMessage));
         });
-        process.on("close", (code) => {
-            debugLog(`[Spawn Close] Exit code: ${code}`);
+        childProcess.on("close", (code, signal) => {
+            clearTimeoutHandle();
+            debugLog(`[Spawn Close] Exit code: ${code}, Signal: ${signal ?? "none"}`);
             debugLog(`[Spawn Stderr Full] ${stderr.trim()}`);
             debugLog(`[Spawn Stdout Full] ${stdout.trim()}`);
-            if (code === 0) {
-                resolve({ stdout, stderr });
+            if (timedOut) {
+                finishReject(buildTimeoutError(signal));
                 return;
             }
-            reject(new Error(`Command failed with exit code ${code}\nStderr: ${stderr.trim()}\nStdout: ${stdout.trim()}`));
+            if (code === 0) {
+                finishResolve({ stdout, stderr });
+                return;
+            }
+            const signalMessage = signal ? `\nSignal: ${signal}` : "";
+            finishReject(new Error(`Command failed with exit code ${code}${signalMessage}\nStderr: ${stderr.trim()}\nStdout: ${stdout.trim()}`));
         });
     });
 }
