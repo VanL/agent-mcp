@@ -62,7 +62,7 @@ This method is suitable if you prefer not to install the server globally or want
 
     Qwen example:
     ```bash
-    qwen -y -o text -- "hello"
+    qwen -p "hello" -y -o text
     ```
 
 6.  **Environment Variables for `start.sh` (Optional):**

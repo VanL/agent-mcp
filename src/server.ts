@@ -262,7 +262,7 @@ const qwenProvider: AgentProviderConfig = {
   defaultCliCommand: 'qwen',
   promptDescription: 'The detailed natural language prompt for Qwen to execute.',
   buildInvocation: ({ prompt }) => ({
-    args: ['-y', '-o', 'text', '--', prompt],
+    args: ['-p', prompt, '-y', '-o', 'text'],
   }),
 };
 

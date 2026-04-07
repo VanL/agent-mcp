@@ -18,7 +18,7 @@ This MCP server provides multiple provider-backed tools that can be used by LLMs
 - Run Claude Code with `--dangerously-skip-permissions`
 - Run Codex with `codex exec --dangerously-bypass-approvals-and-sandbox`
 - Run Gemini with `gemini -p ... -y -o text`
-- Run Qwen with `qwen -y -o text -- ...`
+- Run Qwen with `qwen -p ... -y -o text`
 - Add more providers by extending the registry in [`src/server.ts`](./src/server.ts)
 - Access file editing capabilities directly
 - Keep provider-specific execution details in one place
@@ -161,7 +161,7 @@ gemini -p "hello" -y -o text
 ### Qwen
 
 ```bash
-qwen -y -o text -- "hello"
+qwen -p "hello" -y -o text
 ```
 
 Follow the prompts to accept. Once this is done, the MCP server will be able to use the provider non-interactively.
@@ -224,7 +224,7 @@ Executes a prompt directly using `gemini -p ... -y -o text`.
 
 ### `qwen`
 
-Executes a prompt directly using `qwen -y -o text -- <prompt>`.
+Executes a prompt directly using `qwen -p ... -y -o text`.
 
 **Arguments:**
 - `prompt` (string, required): The prompt to send to Qwen.

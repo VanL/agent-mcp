@@ -21,24 +21,19 @@ export class QwenMock {
 # Mock Qwen CLI for testing
 
 prompt=""
-capture_prompt=false
 
 while [[ $# -gt 0 ]]; do
   case $1 in
-    -y|-o)
-      shift
-      if [[ "$1" == "text" ]]; then
-        shift
+    -p|--prompt|-o)
+      if [[ "$1" == "-p" ]] || [[ "$1" == "--prompt" ]]; then
+        prompt="$2"
       fi
+      shift 2
       ;;
-    --)
-      capture_prompt=true
+    -y|--yolo)
       shift
       ;;
     *)
-      if [[ "$capture_prompt" == true ]]; then
-        prompt="$1"
-      fi
       shift
       ;;
   esac
