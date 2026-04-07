@@ -9,6 +9,7 @@ node_modules/
 package/
 temp-inspect/
 comparison-repo/
+dist/provider-cli-paths.json
 
 # Environment files
 .env

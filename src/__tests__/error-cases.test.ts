@@ -354,7 +354,7 @@ describe("Error Handling Tests", () => {
       new ClaudeCodeServer();
 
       expect(consoleWarnSpy).toHaveBeenCalledWith(
-        expect.stringContaining("Claude CLI not found"),
+        expect.stringContaining("claude_code"),
       );
 
       consoleWarnSpy.mockRestore();

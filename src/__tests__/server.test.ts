@@ -571,6 +571,37 @@ describe("ClaudeCodeServer Unit Tests", () => {
       expect(result.tools[3].description).toContain("Qwen Agent");
     });
 
+    it("should only expose providers whose CLIs can be resolved", async () => {
+      mockHomedir.mockReturnValue("/home/user");
+      mockExistsSync.mockImplementation((path) => path === "/opt/tools/codex");
+      process.env.CODEX_CLI_NAME = "/opt/tools/codex";
+
+      setupServerMock();
+
+      const module = await import("../server.js");
+      // @ts-ignore
+      const { ClaudeCodeServer } = module;
+
+      new ClaudeCodeServer();
+      const mockServerInstance = vi.mocked(Server).mock.results[0].value;
+      const listToolsCall =
+        mockServerInstance.setRequestHandler.mock.calls.find(
+          (call: any[]) => call[0].name === "listTools",
+        );
+
+      expect(listToolsCall).toBeDefined();
+
+      const handler = listToolsCall[1];
+      const result = await handler();
+
+      expect(result.tools).toEqual([
+        expect.objectContaining({
+          name: "codex",
+          description: expect.stringContaining("Codex Agent"),
+        }),
+      ]);
+    });
+
     it("should handle CallToolRequest", async () => {
       mockHomedir.mockReturnValue("/home/user");
       mockExistsSync.mockReturnValue(true);

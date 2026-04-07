@@ -41,11 +41,13 @@ This MCP server provides multiple provider-backed tools that can be used by LLMs
 - Gemini CLI installed locally if you want to use `gemini`
 - Qwen CLI installed locally if you want to use `qwen`
 
+When `agent-mcp` starts, it only exposes provider tools whose CLIs can be resolved to real executables. It prefers absolute paths discovered during install, then any absolute path overrides you provide in config.
+
 ## Configuration
 
 ### Environment Variables
 
-- `CLAUDE_CLI_NAME`: Override the Claude CLI binary name or provide an absolute path (default: `claude`). This allows you to use a custom Claude CLI binary. This is useful for:
+- `CLAUDE_CLI_NAME`: Override the Claude CLI binary name or provide an absolute path (default: `claude`). Absolute paths are the most reliable option in GUI MCP clients, because those clients often launch the server with a minimal PATH.
   - Using custom Claude CLI wrappers
   - Testing with mocked binaries
   - Running multiple Claude CLI versions side by side
@@ -126,6 +128,8 @@ If you prefer Bun and want the package source to come directly from GitHub inste
 bun add -g --trust agent-mcp@github:VanL/agent-mcp
 ```
 
+For GitHub or Bun installs, run the install command from a shell where the provider CLIs you want are already in `PATH`. The install step records exact CLI paths, and the server later uses those absolute paths even if the MCP client launches it with a minimal environment.
+
 To update a Bun global install that uses the GitHub source:
 
 ```bash
@@ -198,7 +202,7 @@ Create this file if it doesn't exist. Add or update the configuration for your M
 
 ## Tools Provided
 
-This server exposes provider-backed tools:
+This server exposes provider-backed tools, but only for providers whose CLI executables were found:
 
 ### `claude_code`
 
