@@ -9,8 +9,8 @@
     "agent-mcp": "bin/agent-mcp"
   },
   "scripts": {
-    "build": "tsc && node scripts/ensure-bin-executable.mjs",
-    "prepare": "tsc && node scripts/ensure-bin-executable.mjs",
+    "build": "node scripts/build-package.mjs",
+    "prepare": "node scripts/build-package.mjs",
     "postinstall": "node scripts/ensure-bin-executable.mjs --install-bin-wrapper",
     "start": "node dist/server.js",
     "dev": "tsx src/server.ts",

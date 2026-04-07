@@ -4,9 +4,6 @@ node_modules/
 # macOS specific
 .DS_Store
 
-# Build output
-dist/
-
 # Package artifacts
 *.tgz
 package/
