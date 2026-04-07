@@ -3,6 +3,7 @@
 import { spawnSync } from "node:child_process";
 import { rmSync } from "node:fs";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const cwd = process.cwd();
 const node = process.execPath;
@@ -13,23 +14,29 @@ const ensureBinExecutableScript = resolve(
   "scripts/ensure-bin-executable.mjs",
 );
 
-rmSync(distDir, { recursive: true, force: true });
+export function runBuildPackage() {
+  rmSync(distDir, { recursive: true, force: true });
 
-const tscResult = spawnSync(
-  node,
-  [tscEntrypoint, "-p", "tsconfig.build.json"],
-  { cwd, stdio: "inherit" },
-);
+  const tscResult = spawnSync(
+    node,
+    [tscEntrypoint, "-p", "tsconfig.build.json"],
+    { cwd, stdio: "inherit" },
+  );
 
-if (tscResult.status !== 0) {
-  process.exit(tscResult.status ?? 1);
+  if (tscResult.status !== 0) {
+    process.exit(tscResult.status ?? 1);
+  }
+
+  const ensureExecutableResult = spawnSync(node, [ensureBinExecutableScript], {
+    cwd,
+    stdio: "inherit",
+  });
+
+  if (ensureExecutableResult.status !== 0) {
+    process.exit(ensureExecutableResult.status ?? 1);
+  }
 }
 
-const ensureExecutableResult = spawnSync(node, [ensureBinExecutableScript], {
-  cwd,
-  stdio: "inherit",
-});
-
-if (ensureExecutableResult.status !== 0) {
-  process.exit(ensureExecutableResult.status ?? 1);
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  runBuildPackage();
 }
