@@ -687,6 +687,68 @@ describe("ClaudeCodeServer Unit Tests", () => {
       expect(result.content[0].text).toBe("tool output");
     });
 
+    it("should honor tool-specific timeoutMs overrides", async () => {
+      mockHomedir.mockReturnValue("/home/user");
+      mockExistsSync.mockReturnValue(true);
+
+      setupServerMock();
+
+      const module = await import("../server.js");
+      // @ts-ignore
+      const { ClaudeCodeServer } = module;
+
+      new ClaudeCodeServer();
+      const mockServerInstance = vi.mocked(Server).mock.results[0].value;
+
+      const callToolCall = mockServerInstance.setRequestHandler.mock.calls.find(
+        (call: any[]) => call[0].name === "callTool",
+      );
+
+      expect(callToolCall).toBeDefined();
+
+      const mockProcess = new EventEmitter() as any;
+      mockProcess.stdout = new EventEmitter();
+      mockProcess.stderr = new EventEmitter();
+      mockProcess.kill = vi.fn(() => true);
+      mockProcess.stdout.on = vi.fn((event, handler) => {
+        if (event === "data") mockProcess.stdout["data"] = handler;
+      });
+      mockProcess.stderr.on = vi.fn((event, handler) => {
+        if (event === "data") mockProcess.stderr["data"] = handler;
+      });
+
+      mockSpawn.mockReturnValue(mockProcess);
+
+      const handler = callToolCall[1];
+
+      vi.useFakeTimers();
+
+      try {
+        const promise = handler({
+          params: {
+            name: "claude_code",
+            arguments: {
+              prompt: "test prompt",
+              workFolder: "/tmp",
+              timeoutMs: 50,
+            },
+          },
+        });
+
+        await vi.advanceTimersByTimeAsync(50);
+
+        expect(mockProcess.kill).toHaveBeenCalledWith("SIGKILL");
+
+        mockProcess.emit("close", null, "SIGKILL");
+
+        await expect(promise).rejects.toThrow(
+          "Claude CLI command timed out after 50ms",
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("should handle non-existent workFolder", async () => {
       mockHomedir.mockReturnValue("/home/user");
       mockExistsSync.mockImplementation((path) => {

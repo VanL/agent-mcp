@@ -73,6 +73,8 @@ When `agent-mcp` starts, it only exposes provider tools whose CLIs can be resolv
   - Absolute path: `QWEN_CLI_NAME=/path/to/custom/qwen`
   - Relative paths are rejected, the same as `CLAUDE_CLI_NAME`
 
+- `AGENT_MCP_EXECUTION_TIMEOUT_MS`: Default server-side timeout for provider CLI executions in milliseconds (default: `300000`, or 5 minutes). Set to `0` to disable the adapter timeout entirely for long-running jobs.
+
 - `MCP_CLAUDE_DEBUG`: Enable verbose debug logging for the server and all configured providers.
 
 ## Installation & Usage
@@ -212,6 +214,7 @@ Executes a prompt directly using the Claude Code CLI with `--dangerously-skip-pe
 
 - `prompt` (string, required): The prompt to send to Claude Code.
 - `workFolder` (string, optional): Absolute working directory to use for file, git, and shell work.
+- `timeoutMs` (integer, optional): Maximum server-side execution time in milliseconds for this request. Set to `0` to disable the timeout for this call.
 
 ### `codex`
 
@@ -221,6 +224,7 @@ Executes a prompt directly using `codex exec --dangerously-bypass-approvals-and-
 
 - `prompt` (string, required): The prompt to send to Codex.
 - `workFolder` (string, optional): Absolute working directory to use for file, git, and shell work.
+- `timeoutMs` (integer, optional): Maximum server-side execution time in milliseconds for this request. Set to `0` to disable the timeout for this call.
 
 ### `gemini`
 
@@ -230,6 +234,7 @@ Executes a prompt directly using `gemini -p ... -y -o text`.
 
 - `prompt` (string, required): The prompt to send to Gemini.
 - `workFolder` (string, optional): Absolute working directory to use for file, git, and shell work.
+- `timeoutMs` (integer, optional): Maximum server-side execution time in milliseconds for this request. Set to `0` to disable the timeout for this call.
 
 ### `qwen`
 
@@ -239,6 +244,7 @@ Executes a prompt directly using `qwen -p ... -y -o text`.
 
 - `prompt` (string, required): The prompt to send to Qwen.
 - `workFolder` (string, optional): Absolute working directory to use for file, git, and shell work.
+- `timeoutMs` (integer, optional): Maximum server-side execution time in milliseconds for this request. Set to `0` to disable the timeout for this call.
 
 **Example MCP Request:**
 
@@ -246,7 +252,8 @@ Executes a prompt directly using `qwen -p ... -y -o text`.
 {
   "toolName": "agent-mcp:claude_code",
   "arguments": {
-    "prompt": "Refactor the function foo in main.py to be async."
+    "prompt": "Refactor the function foo in main.py to be async.",
+    "timeoutMs": 0
   }
 }
 ```
@@ -336,6 +343,7 @@ The server is now organized around a provider registry in [`src/server.ts`](./sr
 
 - **"Command not found" (`agent-mcp`):** If installed globally, ensure the npm global bin directory is in your system's PATH. If using `npx`, ensure `npx` itself is working.
 - **"Command not found" (provider CLI):** Ensure the underlying CLI is installed correctly and that `CLAUDE_CLI_NAME`, `CODEX_CLI_NAME`, `GEMINI_CLI_NAME`, or `QWEN_CLI_NAME` points to a valid executable when overridden.
+- **Long-running jobs time out:** Increase `timeoutMs` on the tool call, or set `AGENT_MCP_EXECUTION_TIMEOUT_MS` in the server environment. If your MCP client has its own request timeout, raise that too; the client can still give up before this server does.
 - **Permissions Issues:** Make sure you've run the "Important First-Time Setup" step.
 - **JSON Errors from Server:** If `MCP_CLAUDE_DEBUG` is `true`, error messages or logs might interfere with MCP's JSON parsing. Set to `false` for normal operation.
 - **ESM/Import Errors:** Ensure you are using Node.js v20 or later.
@@ -375,6 +383,7 @@ For detailed testing documentation, see our [E2E Testing Guide](./docs/e2e-testi
 The server's behavior can be customized using these environment variables:
 
 - `CLAUDE_CLI_NAME`, `CODEX_CLI_NAME`, `GEMINI_CLI_NAME`, `QWEN_CLI_NAME`: Override the executable name or provide an absolute path for each provider CLI.
+- `AGENT_MCP_EXECUTION_TIMEOUT_MS`: Set the default server-side execution timeout in milliseconds for all provider tool calls. Use `0` to disable the adapter timeout.
 - `MCP_CLAUDE_DEBUG`: Set to `true` for verbose debug logging from this MCP server. Default: `false`.
 - Provider-specific auth variables such as `GEMINI_API_KEY` or `OPENROUTER_API_KEY` should be passed through the MCP server environment when the underlying CLI requires them.
 

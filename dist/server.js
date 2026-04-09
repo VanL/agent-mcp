@@ -10,15 +10,18 @@ import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
 // Server version - update this when releasing new versions
-const SERVER_VERSION = "1.10.12";
+const SERVER_VERSION = "1.10.13";
 const debugMode = process.env.MCP_CLAUDE_DEBUG === "true";
 let isFirstToolUse = true;
 const serverStartupTime = new Date().toISOString();
-const executionTimeoutMs = 1800000; // 30 minutes
+const defaultExecutionTimeoutMs = 300000; // 5 minutes
+const executionTimeoutEnvVar = "AGENT_MCP_EXECUTION_TIMEOUT_MS";
 const workFolderDescription = "Mandatory when using file operations or referencing any file. The working directory for the CLI execution. Must be an absolute path.";
+const timeoutMsDescription = "Optional maximum execution time in milliseconds for this tool call. Defaults to AGENT_MCP_EXECUTION_TIMEOUT_MS or 300000 (5 minutes). Set to 0 to disable the server-side timeout.";
 const toolArgumentsSchema = z.object({
     prompt: z.string(),
     workFolder: z.string().optional(),
+    timeoutMs: z.number().int().nonnegative().optional(),
 });
 /**
  * Dedicated debug logging function.
@@ -113,7 +116,40 @@ Prompt tips:
 1. Be concise and explicit for multi-step work.
 2. Set \`workFolder\` to the project root so relative paths resolve correctly.
 3. For analysis-only tasks, explicitly say no file modifications should be made.
-4. Ask for staged or commit-ready changes when you want a Git workflow result.`;
+4. Ask for staged or commit-ready changes when you want a Git workflow result.
+5. Use \`timeoutMs\` for long-running jobs; set it to \`0\` to disable the server-side timeout.`;
+}
+function parseExecutionTimeoutMs(rawValue, source) {
+    if (typeof rawValue !== "string") {
+        return null;
+    }
+    const trimmedValue = rawValue.trim();
+    if (trimmedValue.length === 0) {
+        console.warn(`[Warning] Ignoring empty ${source}. Expected a non-negative integer in milliseconds.`);
+        return null;
+    }
+    if (!/^\d+$/.test(trimmedValue)) {
+        console.warn(`[Warning] Ignoring invalid ${source}: "${rawValue}". Expected a non-negative integer in milliseconds.`);
+        return null;
+    }
+    const parsedValue = Number(trimmedValue);
+    if (!Number.isSafeInteger(parsedValue)) {
+        console.warn(`[Warning] Ignoring out-of-range ${source}: "${rawValue}". Expected a safe non-negative integer in milliseconds.`);
+        return null;
+    }
+    return parsedValue;
+}
+function resolveDefaultExecutionTimeoutMs() {
+    return (parseExecutionTimeoutMs(process.env[executionTimeoutEnvVar], executionTimeoutEnvVar) ?? defaultExecutionTimeoutMs);
+}
+function resolveExecutionTimeoutMs(requestedTimeoutMs) {
+    return requestedTimeoutMs ?? resolveDefaultExecutionTimeoutMs();
+}
+function formatTimeoutMs(timeoutMs) {
+    if (timeoutMs === 0) {
+        return "disabled";
+    }
+    return `${timeoutMs}ms`;
 }
 export function resolveCliCommand(provider) {
     debugLog(`[Debug] Attempting to find ${provider.displayName} CLI...`);
@@ -524,6 +560,11 @@ export class AgentCliServer {
                             type: "string",
                             description: workFolderDescription,
                         },
+                        timeoutMs: {
+                            type: "integer",
+                            minimum: 0,
+                            description: timeoutMsDescription,
+                        },
                     },
                     required: ["prompt"],
                 },
@@ -538,8 +579,9 @@ export class AgentCliServer {
             }
             const parsedArguments = parseToolArguments(args.params.arguments, toolName);
             const effectiveCwd = resolveWorkingDirectory(parsedArguments.workFolder);
+            const executionTimeoutMs = resolveExecutionTimeoutMs(parsedArguments.timeoutMs);
             try {
-                debugLog(`[Debug] Attempting to execute ${provider.displayName} CLI with prompt: "${parsedArguments.prompt}" in CWD: "${effectiveCwd}"`);
+                debugLog(`[Debug] Attempting to execute ${provider.displayName} CLI with prompt: "${parsedArguments.prompt}" in CWD: "${effectiveCwd}" (timeout: ${formatTimeoutMs(executionTimeoutMs)})`);
                 if (isFirstToolUse) {
                     console.error(`${provider.toolName} v${SERVER_VERSION} started at ${serverStartupTime}`);
                     isFirstToolUse = false;
@@ -578,10 +620,11 @@ export class AgentCliServer {
                 if (error.stdout) {
                     errorMessage += `\nStdout: ${error.stdout}`;
                 }
-                if (error.signal === "SIGTERM" ||
-                    (error.message && error.message.includes("ETIMEDOUT")) ||
-                    error.code === "ETIMEDOUT") {
-                    throw new McpError(ErrorCode.InternalError, `${provider.displayName} CLI command timed out after ${executionTimeoutMs / 1000}s. Details: ${errorMessage}`);
+                if (executionTimeoutMs > 0 &&
+                    (error.signal === "SIGTERM" ||
+                        (error.message && error.message.includes("ETIMEDOUT")) ||
+                        error.code === "ETIMEDOUT")) {
+                    throw new McpError(ErrorCode.InternalError, `${provider.displayName} CLI command timed out after ${formatTimeoutMs(executionTimeoutMs)}. Details: ${errorMessage}`);
                 }
                 throw new McpError(ErrorCode.InternalError, `${provider.displayName} CLI execution failed: ${errorMessage}`);
             }

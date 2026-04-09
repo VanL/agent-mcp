@@ -88,12 +88,19 @@ describe("Argument Validation Tests", () => {
       const schema = z.object({
         prompt: z.string(),
         workFolder: z.string().optional(),
+        timeoutMs: z.number().int().nonnegative().optional(),
       });
 
       // Test valid cases
       expect(() => schema.parse({ prompt: "test" })).not.toThrow();
       expect(() =>
         schema.parse({ prompt: "test", workFolder: "/tmp" }),
+      ).not.toThrow();
+      expect(() =>
+        schema.parse({ prompt: "test", timeoutMs: 0 }),
+      ).not.toThrow();
+      expect(() =>
+        schema.parse({ prompt: "test", timeoutMs: 120000 }),
       ).not.toThrow();
     });
 
@@ -121,18 +128,22 @@ describe("Argument Validation Tests", () => {
       const schema = z.object({
         prompt: z.string(),
         workFolder: z.string().optional(),
+        timeoutMs: z.number().int().nonnegative().optional(),
       });
 
       // Test invalid cases
       expect(() => schema.parse({})).toThrow(); // Missing prompt
       expect(() => schema.parse({ prompt: 123 })).toThrow(); // Wrong type
       expect(() => schema.parse({ prompt: "test", workFolder: 123 })).toThrow(); // Wrong workFolder type
+      expect(() => schema.parse({ prompt: "test", timeoutMs: -1 })).toThrow(); // Negative timeout
+      expect(() => schema.parse({ prompt: "test", timeoutMs: 1.5 })).toThrow(); // Non-integer timeout
     });
 
     it("should handle missing required fields", async () => {
       const schema = z.object({
         prompt: z.string(),
         workFolder: z.string().optional(),
+        timeoutMs: z.number().int().nonnegative().optional(),
       });
 
       try {
@@ -147,16 +158,19 @@ describe("Argument Validation Tests", () => {
       const schema = z.object({
         prompt: z.string(),
         workFolder: z.string().optional(),
+        timeoutMs: z.number().int().nonnegative().optional(),
       });
 
       const result = schema.parse({ prompt: "test" });
       expect(result.workFolder).toBeUndefined();
+      expect(result.timeoutMs).toBeUndefined();
     });
 
     it("should handle extra fields gracefully", async () => {
       const schema = z.object({
         prompt: z.string(),
         workFolder: z.string().optional(),
+        timeoutMs: z.number().int().nonnegative().optional(),
       });
 
       // By default, Zod strips unknown keys
@@ -196,6 +210,36 @@ describe("Argument Validation Tests", () => {
             arguments: {
               prompt: "test",
               workFolder: 123, // Invalid type
+            },
+          },
+        }),
+      ).rejects.toThrow();
+    });
+
+    it("should validate timeoutMs is a non-negative integer when provided", async () => {
+      mockHomedir.mockReturnValue("/home/user");
+      mockExistsSync.mockReturnValue(true);
+      setupServerMock();
+      const module = await import("../server.js");
+      // @ts-ignore
+      const { ClaudeCodeServer } = module;
+
+      new ClaudeCodeServer();
+      const mockServerInstance = vi.mocked(Server).mock.results[0].value;
+
+      const callToolCall = mockServerInstance.setRequestHandler.mock.calls.find(
+        (call: any[]) => call[0].name === "callTool",
+      );
+
+      const handler = callToolCall[1];
+
+      await expect(
+        handler({
+          params: {
+            name: "claude_code",
+            arguments: {
+              prompt: "test",
+              timeoutMs: -1,
             },
           },
         }),

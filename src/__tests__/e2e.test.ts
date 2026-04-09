@@ -71,6 +71,11 @@ describe("agent-mcp E2E Tests", () => {
               type: "string",
               description: expect.stringContaining("working directory"),
             },
+            timeoutMs: {
+              type: "integer",
+              minimum: 0,
+              description: expect.stringContaining("execution time"),
+            },
           },
           required: ["prompt"],
         },
@@ -90,6 +95,11 @@ describe("agent-mcp E2E Tests", () => {
             workFolder: {
               type: "string",
               description: expect.stringContaining("working directory"),
+            },
+            timeoutMs: {
+              type: "integer",
+              minimum: 0,
+              description: expect.stringContaining("execution time"),
             },
           },
           required: ["prompt"],
@@ -111,6 +121,11 @@ describe("agent-mcp E2E Tests", () => {
               type: "string",
               description: expect.stringContaining("working directory"),
             },
+            timeoutMs: {
+              type: "integer",
+              minimum: 0,
+              description: expect.stringContaining("execution time"),
+            },
           },
           required: ["prompt"],
         },
@@ -130,6 +145,11 @@ describe("agent-mcp E2E Tests", () => {
             workFolder: {
               type: "string",
               description: expect.stringContaining("working directory"),
+            },
+            timeoutMs: {
+              type: "integer",
+              minimum: 0,
+              description: expect.stringContaining("execution time"),
             },
           },
           required: ["prompt"],
