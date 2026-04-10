@@ -306,7 +306,7 @@ function parseToolArguments(toolArguments, toolName) {
     throw new McpError(ErrorCode.InvalidParams, `Invalid arguments for ${toolName}${issuePath}: ${issueMessage}`);
 }
 function resolveWorkingDirectory(workFolder) {
-    let effectiveCwd = homedir();
+    const effectiveCwd = homedir();
     if (!workFolder) {
         debugLog(`[Debug] No workFolder provided, using default CWD: ${effectiveCwd}`);
         return effectiveCwd;

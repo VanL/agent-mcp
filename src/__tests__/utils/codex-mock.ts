@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { join, dirname } from "node:path";
 
 /**
  * Mock Codex CLI for testing.
@@ -7,8 +7,8 @@ import { join, dirname } from 'node:path';
 export class CodexMock {
   private mockPath: string;
 
-  constructor(binaryName: string = 'codex') {
-    this.mockPath = join('/tmp', 'agent-cli-test-mock', binaryName);
+  constructor(binaryName: string = "codex") {
+    this.mockPath = join("/tmp", "agent-cli-test-mock", binaryName);
   }
 
   async setup(): Promise<void> {
@@ -60,12 +60,12 @@ fi
 `;
 
     writeFileSync(this.mockPath, mockScript);
-    const { chmod } = await import('node:fs/promises');
+    const { chmod } = await import("node:fs/promises");
     await chmod(this.mockPath, 0o755);
   }
 
   async cleanup(): Promise<void> {
-    const { rm } = await import('node:fs/promises');
+    const { rm } = await import("node:fs/promises");
     await rm(this.mockPath, { force: true });
   }
 }

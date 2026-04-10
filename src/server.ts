@@ -517,7 +517,7 @@ function parseToolArguments(
 }
 
 function resolveWorkingDirectory(workFolder?: string): string {
-  let effectiveCwd = homedir();
+  const effectiveCwd = homedir();
 
   if (!workFolder) {
     debugLog(

@@ -58,7 +58,7 @@ const providerCliConfigs = [
 ];
 
 function shellQuote(value) {
-  return `'${value.replaceAll("'", `'\"'\"'`)}'`;
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
 function detectPreferredRuntime() {

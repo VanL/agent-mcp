@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { join, dirname } from "node:path";
 
 /**
  * Mock Claude CLI for testing
@@ -8,9 +8,9 @@ import { join, dirname } from 'node:path';
 export class ClaudeMock {
   private mockPath: string;
 
-  constructor(binaryName: string = 'claude') {
+  constructor(binaryName: string = "claude") {
     // Always use /tmp directory for mocks in tests
-    this.mockPath = join('/tmp', 'agent-cli-test-mock', binaryName);
+    this.mockPath = join("/tmp", "agent-cli-test-mock", binaryName);
   }
 
   /**
@@ -65,7 +65,7 @@ fi
 
     writeFileSync(this.mockPath, mockScript);
     // Make executable
-    const { chmod } = await import('node:fs/promises');
+    const { chmod } = await import("node:fs/promises");
     await chmod(this.mockPath, 0o755);
   }
 
@@ -73,7 +73,7 @@ fi
    * Cleanup the mock Claude CLI
    */
   async cleanup(): Promise<void> {
-    const { rm } = await import('node:fs/promises');
+    const { rm } = await import("node:fs/promises");
     await rm(this.mockPath, { force: true });
   }
 
