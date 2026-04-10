@@ -370,6 +370,28 @@ describe("ClaudeCodeServer Unit Tests", () => {
       }
     });
 
+    it("should kill the command when the abort signal is triggered", async () => {
+      const module = await import("../server.js");
+      // @ts-ignore
+      const { spawnAsync } = module;
+
+      const controller = new AbortController();
+      const promise = spawnAsync("sleep", ["10"], {
+        signal: controller.signal,
+      });
+
+      controller.abort("Request timed out");
+
+      expect(mockProcess.kill).toHaveBeenCalledWith("SIGKILL");
+
+      mockProcess.emit("close", null, "SIGKILL");
+
+      await expect(promise).rejects.toMatchObject({
+        code: "ABORT_ERR",
+        signal: "SIGKILL",
+      });
+    });
+
     it("should use provided cwd option", async () => {
       const module = await import("../server.js");
       // @ts-ignore
@@ -744,6 +766,99 @@ describe("ClaudeCodeServer Unit Tests", () => {
         await expect(promise).rejects.toThrow(
           "Claude CLI command timed out after 50ms",
         );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("should send progress heartbeats when the client requests progress", async () => {
+      mockHomedir.mockReturnValue("/home/user");
+      mockExistsSync.mockReturnValue(true);
+
+      setupServerMock();
+
+      const module = await import("../server.js");
+      // @ts-ignore
+      const { ClaudeCodeServer } = module;
+
+      new ClaudeCodeServer();
+      const mockServerInstance = vi.mocked(Server).mock.results[0].value;
+
+      const callToolCall = mockServerInstance.setRequestHandler.mock.calls.find(
+        (call: any[]) => call[0].name === "callTool",
+      );
+
+      expect(callToolCall).toBeDefined();
+
+      const mockProcess = new EventEmitter() as any;
+      mockProcess.stdout = new EventEmitter();
+      mockProcess.stderr = new EventEmitter();
+      mockProcess.kill = vi.fn(() => true);
+      mockProcess.stdout.on = vi.fn((event, handler) => {
+        if (event === "data") mockProcess.stdout["data"] = handler;
+      });
+      mockProcess.stderr.on = vi.fn((event, handler) => {
+        if (event === "data") mockProcess.stderr["data"] = handler;
+      });
+
+      mockSpawn.mockReturnValue(mockProcess);
+
+      const handler = callToolCall[1];
+      const sendNotification = vi.fn().mockResolvedValue(undefined);
+      const controller = new AbortController();
+
+      vi.useFakeTimers();
+
+      try {
+        const promise = handler(
+          {
+            params: {
+              name: "claude_code",
+              arguments: {
+                prompt: "test prompt",
+                workFolder: "/tmp",
+                timeoutMs: 0,
+              },
+            },
+          },
+          {
+            _meta: { progressToken: 42 },
+            sendNotification,
+            sendRequest: vi.fn(),
+            signal: controller.signal,
+            requestId: 1,
+          },
+        );
+
+        expect(sendNotification).toHaveBeenCalledWith({
+          method: "notifications/progress",
+          params: {
+            progressToken: 42,
+            progress: 1,
+          },
+        });
+
+        await vi.advanceTimersByTimeAsync(10000);
+
+        expect(sendNotification).toHaveBeenNthCalledWith(2, {
+          method: "notifications/progress",
+          params: {
+            progressToken: 42,
+            progress: 2,
+          },
+        });
+        expect(sendNotification).toHaveBeenNthCalledWith(3, {
+          method: "notifications/progress",
+          params: {
+            progressToken: 42,
+            progress: 3,
+          },
+        });
+
+        mockProcess.stdout["data"]("tool output");
+        mockProcess.emit("close", 0);
+
+        await promise;
       } finally {
         vi.useRealTimers();
       }

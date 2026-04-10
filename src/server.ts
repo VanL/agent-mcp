@@ -23,13 +23,14 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
 
 // Server version - update this when releasing new versions
-const SERVER_VERSION = "1.10.13";
+const SERVER_VERSION = "1.10.14";
 
 const debugMode = process.env.MCP_CLAUDE_DEBUG === "true";
 let isFirstToolUse = true;
 const serverStartupTime = new Date().toISOString();
 const defaultExecutionTimeoutMs = 300000; // 5 minutes
 const executionTimeoutEnvVar = "AGENT_MCP_EXECUTION_TIMEOUT_MS";
+const progressHeartbeatIntervalMs = 5000;
 
 const workFolderDescription =
   "Mandatory when using file operations or referencing any file. The working directory for the CLI execution. Must be an absolute path.";
@@ -43,6 +44,20 @@ const toolArgumentsSchema = z.object({
 });
 
 type ToolArguments = z.infer<typeof toolArgumentsSchema>;
+
+interface ProgressNotificationExtra {
+  _meta?: {
+    progressToken?: string | number;
+  };
+  sendNotification?: (notification: {
+    method: "notifications/progress";
+    params: {
+      progressToken: string | number;
+      progress: number;
+    };
+  }) => Promise<void>;
+  signal?: AbortSignal;
+}
 
 interface SpawnResult {
   stdout: string;
@@ -263,6 +278,54 @@ function formatTimeoutMs(timeoutMs: number): string {
   }
 
   return `${timeoutMs}ms`;
+}
+
+function startProgressHeartbeat(
+  extra: ProgressNotificationExtra | undefined,
+  providerDisplayName: string,
+): () => void {
+  const progressToken = extra?._meta?.progressToken;
+  const sendNotification = extra?.sendNotification;
+
+  if (progressToken === undefined || typeof sendNotification !== "function") {
+    return () => {};
+  }
+
+  let progress = 0;
+  let stopped = false;
+
+  const sendProgress = (): void => {
+    if (stopped) {
+      return;
+    }
+
+    progress += 1;
+    void sendNotification({
+      method: "notifications/progress",
+      params: {
+        progressToken,
+        progress,
+      },
+    }).catch((error) => {
+      debugLog(
+        `[Debug] Failed to send progress notification for ${providerDisplayName}:`,
+        error,
+      );
+    });
+  };
+
+  sendProgress();
+
+  const heartbeatHandle = setInterval(
+    sendProgress,
+    progressHeartbeatIntervalMs,
+  );
+  heartbeatHandle.unref?.();
+
+  return () => {
+    stopped = true;
+    clearInterval(heartbeatHandle);
+  };
 }
 
 export function resolveCliCommand(provider: AgentProviderConfig): string {
@@ -609,7 +672,7 @@ export function findQwenCli(): string {
 export async function spawnAsync(
   command: string,
   args: string[],
-  options?: { timeout?: number; cwd?: string },
+  options?: { timeout?: number; cwd?: string; signal?: AbortSignal },
 ): Promise<SpawnResult> {
   return new Promise((resolve, reject) => {
     debugLog(`[Spawn] Running command: ${command} ${args.join(" ")}`);
@@ -624,6 +687,7 @@ export async function spawnAsync(
     let stderr = "";
     let settled = false;
     let timedOut = false;
+    let aborted = false;
 
     const buildTimeoutError = (signal?: NodeJS.Signals | null): Error => {
       const timeoutMs = options?.timeout ?? 0;
@@ -636,6 +700,26 @@ export async function spawnAsync(
         stdout?: string;
       };
       error.code = "ETIMEDOUT";
+      error.signal = signal ?? null;
+      error.stderr = stderr;
+      error.stdout = stdout;
+      return error;
+    };
+
+    const buildAbortError = (signal?: NodeJS.Signals | null): Error => {
+      const reason = options?.signal?.reason;
+      const reasonSuffix =
+        reason === undefined ? "" : `\nReason: ${String(reason)}`;
+      const error = new Error(
+        `Command aborted${reasonSuffix}\nSignal: ${signal ?? "unknown"}\nStderr: ${stderr.trim()}\nStdout: ${stdout.trim()}`,
+      ) as Error & {
+        code?: string;
+        signal?: NodeJS.Signals | null;
+        stderr?: string;
+        stdout?: string;
+      };
+      error.name = "AbortError";
+      error.code = "ABORT_ERR";
       error.signal = signal ?? null;
       error.stderr = stderr;
       error.stdout = stdout;
@@ -660,6 +744,27 @@ export async function spawnAsync(
       reject(error);
     };
 
+    const killChildProcess = (reason: string): void => {
+      debugLog(`[Spawn ${reason}] Killing command: ${command}`);
+
+      if (
+        process.platform !== "win32" &&
+        typeof childProcess.pid === "number"
+      ) {
+        try {
+          process.kill(-childProcess.pid, "SIGKILL");
+          return;
+        } catch (error) {
+          debugLog(
+            `[Spawn ${reason}] Failed to kill process group, falling back to child process kill:`,
+            error,
+          );
+        }
+      }
+
+      childProcess.kill("SIGKILL");
+    };
+
     const timeoutHandle =
       typeof options?.timeout === "number" && options.timeout > 0
         ? setTimeout(() => {
@@ -668,33 +773,35 @@ export async function spawnAsync(
             }
 
             timedOut = true;
-            debugLog(
-              `[Spawn Timeout] Killing command after ${options.timeout}ms: ${command}`,
-            );
-
-            if (
-              process.platform !== "win32" &&
-              typeof childProcess.pid === "number"
-            ) {
-              try {
-                process.kill(-childProcess.pid, "SIGKILL");
-                return;
-              } catch (error) {
-                debugLog(
-                  "[Spawn Timeout] Failed to kill process group, falling back to child process kill:",
-                  error,
-                );
-              }
-            }
-
-            childProcess.kill("SIGKILL");
+            killChildProcess(`Timeout after ${options.timeout}ms`);
           }, options.timeout)
         : null;
+
+    const abortHandler = (): void => {
+      if (settled) {
+        return;
+      }
+
+      aborted = true;
+      killChildProcess("Abort");
+    };
+
+    if (options?.signal) {
+      if (options.signal.aborted) {
+        abortHandler();
+      } else {
+        options.signal.addEventListener("abort", abortHandler, { once: true });
+      }
+    }
 
     const clearTimeoutHandle = (): void => {
       if (timeoutHandle) {
         clearTimeout(timeoutHandle);
       }
+    };
+
+    const cleanupAbortHandler = (): void => {
+      options?.signal?.removeEventListener("abort", abortHandler);
     };
 
     childProcess.stdout.on("data", (data) => {
@@ -707,13 +814,30 @@ export async function spawnAsync(
 
     childProcess.on("error", (error: NodeJS.ErrnoException) => {
       clearTimeoutHandle();
+      cleanupAbortHandler();
       debugLog("[Spawn Error Event] Full error object:", error);
 
       if (timedOut) {
         finishReject(
           buildTimeoutError(
-            (error as NodeJS.ErrnoException & { signal?: NodeJS.Signals | null })
-              .signal,
+            (
+              error as NodeJS.ErrnoException & {
+                signal?: NodeJS.Signals | null;
+              }
+            ).signal,
+          ),
+        );
+        return;
+      }
+
+      if (aborted) {
+        finishReject(
+          buildAbortError(
+            (
+              error as NodeJS.ErrnoException & {
+                signal?: NodeJS.Signals | null;
+              }
+            ).signal,
           ),
         );
         return;
@@ -732,12 +856,18 @@ export async function spawnAsync(
 
     childProcess.on("close", (code, signal) => {
       clearTimeoutHandle();
+      cleanupAbortHandler();
       debugLog(`[Spawn Close] Exit code: ${code}, Signal: ${signal ?? "none"}`);
       debugLog(`[Spawn Stderr Full] ${stderr.trim()}`);
       debugLog(`[Spawn Stdout Full] ${stdout.trim()}`);
 
       if (timedOut) {
         finishReject(buildTimeoutError(signal));
+        return;
+      }
+
+      if (aborted) {
+        finishReject(buildAbortError(signal));
         return;
       }
 
@@ -845,7 +975,7 @@ export class AgentCliServer {
 
     this.server.setRequestHandler(
       CallToolRequestSchema,
-      async (args): Promise<ServerResult> => {
+      async (args, extra): Promise<ServerResult> => {
         debugLog("[Debug] Handling CallToolRequest:", args);
 
         const toolName = args.params.name;
@@ -884,6 +1014,10 @@ export class AgentCliServer {
             prompt: parsedArguments.prompt,
             cwd: effectiveCwd,
           });
+          const stopProgressHeartbeat = startProgressHeartbeat(
+            extra,
+            provider.displayName,
+          );
 
           try {
             const executionArgs = [
@@ -899,6 +1033,7 @@ export class AgentCliServer {
               {
                 timeout: executionTimeoutMs,
                 cwd: effectiveCwd,
+                signal: extra?.signal,
               },
             );
 
@@ -917,9 +1052,17 @@ export class AgentCliServer {
               provider.extractOutput?.(result, invocation) ?? result.stdout;
             return { content: [{ type: "text", text: output }] };
           } finally {
+            stopProgressHeartbeat();
             cleanupInvocation(invocation);
           }
         } catch (error: any) {
+          if (extra?.signal?.aborted) {
+            debugLog(
+              `[Debug] ${provider.displayName} CLI request was cancelled by the client.`,
+            );
+            throw error;
+          }
+
           debugLog(
             `[Error] Error executing ${provider.displayName} CLI:`,
             error,

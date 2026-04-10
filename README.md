@@ -343,7 +343,7 @@ The server is now organized around a provider registry in [`src/server.ts`](./sr
 
 - **"Command not found" (`agent-mcp`):** If installed globally, ensure the npm global bin directory is in your system's PATH. If using `npx`, ensure `npx` itself is working.
 - **"Command not found" (provider CLI):** Ensure the underlying CLI is installed correctly and that `CLAUDE_CLI_NAME`, `CODEX_CLI_NAME`, `GEMINI_CLI_NAME`, or `QWEN_CLI_NAME` points to a valid executable when overridden.
-- **Long-running jobs time out:** Increase `timeoutMs` on the tool call, or set `AGENT_MCP_EXECUTION_TIMEOUT_MS` in the server environment. If your MCP client has its own request timeout, raise that too; the client can still give up before this server does.
+- **Long-running jobs time out:** There are two different timeouts. `timeoutMs` and `AGENT_MCP_EXECUTION_TIMEOUT_MS` only control the server-side provider timeout. Many MCP clients also enforce their own request timeout, often around 60 seconds. `agent-mcp` now sends MCP progress heartbeats for clients that request progress, which lets progress-aware clients keep long-running calls alive. If your MCP client does not request progress or does not allow a higher request timeout, long one-shot calls can still time out in the client.
 - **Permissions Issues:** Make sure you've run the "Important First-Time Setup" step.
 - **JSON Errors from Server:** If `MCP_CLAUDE_DEBUG` is `true`, error messages or logs might interfere with MCP's JSON parsing. Set to `false` for normal operation.
 - **ESM/Import Errors:** Ensure you are using Node.js v20 or later.

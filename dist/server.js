@@ -10,12 +10,13 @@ import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
 // Server version - update this when releasing new versions
-const SERVER_VERSION = "1.10.13";
+const SERVER_VERSION = "1.10.14";
 const debugMode = process.env.MCP_CLAUDE_DEBUG === "true";
 let isFirstToolUse = true;
 const serverStartupTime = new Date().toISOString();
 const defaultExecutionTimeoutMs = 300000; // 5 minutes
 const executionTimeoutEnvVar = "AGENT_MCP_EXECUTION_TIMEOUT_MS";
+const progressHeartbeatIntervalMs = 5000;
 const workFolderDescription = "Mandatory when using file operations or referencing any file. The working directory for the CLI execution. Must be an absolute path.";
 const timeoutMsDescription = "Optional maximum execution time in milliseconds for this tool call. Defaults to AGENT_MCP_EXECUTION_TIMEOUT_MS or 300000 (5 minutes). Set to 0 to disable the server-side timeout.";
 const toolArgumentsSchema = z.object({
@@ -150,6 +151,37 @@ function formatTimeoutMs(timeoutMs) {
         return "disabled";
     }
     return `${timeoutMs}ms`;
+}
+function startProgressHeartbeat(extra, providerDisplayName) {
+    const progressToken = extra?._meta?.progressToken;
+    const sendNotification = extra?.sendNotification;
+    if (progressToken === undefined || typeof sendNotification !== "function") {
+        return () => { };
+    }
+    let progress = 0;
+    let stopped = false;
+    const sendProgress = () => {
+        if (stopped) {
+            return;
+        }
+        progress += 1;
+        void sendNotification({
+            method: "notifications/progress",
+            params: {
+                progressToken,
+                progress,
+            },
+        }).catch((error) => {
+            debugLog(`[Debug] Failed to send progress notification for ${providerDisplayName}:`, error);
+        });
+    };
+    sendProgress();
+    const heartbeatHandle = setInterval(sendProgress, progressHeartbeatIntervalMs);
+    heartbeatHandle.unref?.();
+    return () => {
+        stopped = true;
+        clearInterval(heartbeatHandle);
+    };
 }
 export function resolveCliCommand(provider) {
     debugLog(`[Debug] Attempting to find ${provider.displayName} CLI...`);
@@ -412,10 +444,22 @@ export async function spawnAsync(command, args, options) {
         let stderr = "";
         let settled = false;
         let timedOut = false;
+        let aborted = false;
         const buildTimeoutError = (signal) => {
             const timeoutMs = options?.timeout ?? 0;
             const error = new Error(`Command timed out after ${timeoutMs}ms\nSignal: ${signal ?? "unknown"}\nStderr: ${stderr.trim()}\nStdout: ${stdout.trim()}`);
             error.code = "ETIMEDOUT";
+            error.signal = signal ?? null;
+            error.stderr = stderr;
+            error.stdout = stdout;
+            return error;
+        };
+        const buildAbortError = (signal) => {
+            const reason = options?.signal?.reason;
+            const reasonSuffix = reason === undefined ? "" : `\nReason: ${String(reason)}`;
+            const error = new Error(`Command aborted${reasonSuffix}\nSignal: ${signal ?? "unknown"}\nStderr: ${stderr.trim()}\nStdout: ${stdout.trim()}`);
+            error.name = "AbortError";
+            error.code = "ABORT_ERR";
             error.signal = signal ?? null;
             error.stderr = stderr;
             error.stdout = stdout;
@@ -435,30 +479,51 @@ export async function spawnAsync(command, args, options) {
             settled = true;
             reject(error);
         };
+        const killChildProcess = (reason) => {
+            debugLog(`[Spawn ${reason}] Killing command: ${command}`);
+            if (process.platform !== "win32" &&
+                typeof childProcess.pid === "number") {
+                try {
+                    process.kill(-childProcess.pid, "SIGKILL");
+                    return;
+                }
+                catch (error) {
+                    debugLog(`[Spawn ${reason}] Failed to kill process group, falling back to child process kill:`, error);
+                }
+            }
+            childProcess.kill("SIGKILL");
+        };
         const timeoutHandle = typeof options?.timeout === "number" && options.timeout > 0
             ? setTimeout(() => {
                 if (settled) {
                     return;
                 }
                 timedOut = true;
-                debugLog(`[Spawn Timeout] Killing command after ${options.timeout}ms: ${command}`);
-                if (process.platform !== "win32" &&
-                    typeof childProcess.pid === "number") {
-                    try {
-                        process.kill(-childProcess.pid, "SIGKILL");
-                        return;
-                    }
-                    catch (error) {
-                        debugLog("[Spawn Timeout] Failed to kill process group, falling back to child process kill:", error);
-                    }
-                }
-                childProcess.kill("SIGKILL");
+                killChildProcess(`Timeout after ${options.timeout}ms`);
             }, options.timeout)
             : null;
+        const abortHandler = () => {
+            if (settled) {
+                return;
+            }
+            aborted = true;
+            killChildProcess("Abort");
+        };
+        if (options?.signal) {
+            if (options.signal.aborted) {
+                abortHandler();
+            }
+            else {
+                options.signal.addEventListener("abort", abortHandler, { once: true });
+            }
+        }
         const clearTimeoutHandle = () => {
             if (timeoutHandle) {
                 clearTimeout(timeoutHandle);
             }
+        };
+        const cleanupAbortHandler = () => {
+            options?.signal?.removeEventListener("abort", abortHandler);
         };
         childProcess.stdout.on("data", (data) => {
             stdout += data.toString();
@@ -469,10 +534,14 @@ export async function spawnAsync(command, args, options) {
         });
         childProcess.on("error", (error) => {
             clearTimeoutHandle();
+            cleanupAbortHandler();
             debugLog("[Spawn Error Event] Full error object:", error);
             if (timedOut) {
-                finishReject(buildTimeoutError(error
-                    .signal));
+                finishReject(buildTimeoutError(error.signal));
+                return;
+            }
+            if (aborted) {
+                finishReject(buildAbortError(error.signal));
                 return;
             }
             let errorMessage = `Spawn error: ${error.message}`;
@@ -487,11 +556,16 @@ export async function spawnAsync(command, args, options) {
         });
         childProcess.on("close", (code, signal) => {
             clearTimeoutHandle();
+            cleanupAbortHandler();
             debugLog(`[Spawn Close] Exit code: ${code}, Signal: ${signal ?? "none"}`);
             debugLog(`[Spawn Stderr Full] ${stderr.trim()}`);
             debugLog(`[Spawn Stdout Full] ${stdout.trim()}`);
             if (timedOut) {
                 finishReject(buildTimeoutError(signal));
+                return;
+            }
+            if (aborted) {
+                finishReject(buildAbortError(signal));
                 return;
             }
             if (code === 0) {
@@ -570,7 +644,7 @@ export class AgentCliServer {
                 },
             })),
         }));
-        this.server.setRequestHandler(CallToolRequestSchema, async (args) => {
+        this.server.setRequestHandler(CallToolRequestSchema, async (args, extra) => {
             debugLog("[Debug] Handling CallToolRequest:", args);
             const toolName = args.params.name;
             const provider = this.providersByToolName.get(toolName);
@@ -590,6 +664,7 @@ export class AgentCliServer {
                     prompt: parsedArguments.prompt,
                     cwd: effectiveCwd,
                 });
+                const stopProgressHeartbeat = startProgressHeartbeat(extra, provider.displayName);
                 try {
                     const executionArgs = [
                         ...provider.cliArgsPrefix,
@@ -599,6 +674,7 @@ export class AgentCliServer {
                     const result = await spawnAsync(provider.cliCommand, executionArgs, {
                         timeout: executionTimeoutMs,
                         cwd: effectiveCwd,
+                        signal: extra?.signal,
                     });
                     debugLog(`[Debug] ${provider.displayName} CLI stdout:`, result.stdout.trim());
                     if (result.stderr) {
@@ -608,10 +684,15 @@ export class AgentCliServer {
                     return { content: [{ type: "text", text: output }] };
                 }
                 finally {
+                    stopProgressHeartbeat();
                     cleanupInvocation(invocation);
                 }
             }
             catch (error) {
+                if (extra?.signal?.aborted) {
+                    debugLog(`[Debug] ${provider.displayName} CLI request was cancelled by the client.`);
+                    throw error;
+                }
                 debugLog(`[Error] Error executing ${provider.displayName} CLI:`, error);
                 let errorMessage = error.message || "Unknown error";
                 if (error.stderr) {
