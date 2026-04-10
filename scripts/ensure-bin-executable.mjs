@@ -50,6 +50,12 @@ const providerCliConfigs = [
     preferredPaths: [],
   },
   {
+    id: "opencode",
+    envVar: "OPENCODE_CLI_NAME",
+    defaultCommand: "opencode",
+    preferredPaths: [],
+  },
+  {
     id: "qwen",
     envVar: "QWEN_CLI_NAME",
     defaultCommand: "qwen",

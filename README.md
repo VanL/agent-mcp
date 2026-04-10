@@ -7,7 +7,7 @@
 
 An MCP (Model Context Protocol) server that exposes a single MCP tool backed by multiple agent CLIs and runs them through one shared async job path.
 
-Did you notice that Cursor sometimes struggles with complex, multi-step edits or operations? This server exposes one provider-backed MCP tool that can target `claude_code`, `codex`, `gemini`, or `qwen`, keeping the adapter layer extensible while avoiding long synchronous calls that hit client timeouts.
+Did you notice that Cursor sometimes struggles with complex, multi-step edits or operations? This server exposes one provider-backed MCP tool that can target `claude_code`, `codex`, `gemini`, `opencode`, or `qwen`, keeping the adapter layer extensible while avoiding long synchronous calls that hit client timeouts.
 
 <img src="assets/screenshot.png" width="300" alt="Screenshot">
 
@@ -18,6 +18,7 @@ This MCP server provides one provider-backed tool that can be used by LLMs to in
 - Run Claude Code with `--dangerously-skip-permissions`
 - Run Codex with `codex exec --dangerously-bypass-approvals-and-sandbox`
 - Run Gemini with `gemini -p ... -y -o text`
+- Run OpenCode with `opencode run --format json --dangerously-skip-permissions`
 - Run Qwen with `qwen -p ... -y -o text`
 - Add more providers by extending the registry in [`src/server.ts`](./src/server.ts)
 - Access file editing capabilities directly
@@ -26,7 +27,7 @@ This MCP server provides one provider-backed tool that can be used by LLMs to in
 ## Benefits
 
 - LLM clients often struggle with longer file edits, git operations, and repo workflows. This server lets them hand those jobs to purpose-built agent CLIs.
-- Claude Code, Codex, Gemini, and Qwen are available through one MCP tool, so clients can switch providers without standing up separate adapters.
+- Claude Code, Codex, Gemini, OpenCode, and Qwen are available through one MCP tool, so clients can switch providers without standing up separate adapters.
 - Multiple commands can be queued instead of direct execution. This saves context space so more important stuff is retained longer and fewer compacts happen.
 - File ops, git, and shell work do not need your primary chat model. You can route work to the provider that fits best and keep the adapter layer extensible.
 - Agents in Agents rules.
@@ -39,6 +40,7 @@ This MCP server provides one provider-backed tool that can be used by LLMs to in
 - Claude CLI installed locally if you want to use `claude_code`
 - Codex CLI installed locally if you want to use `codex`
 - Gemini CLI installed locally if you want to use `gemini`
+- OpenCode CLI installed locally if you want to use `opencode`
 - Qwen CLI installed locally if you want to use `qwen`
 
 When `agent-mcp` starts, it only exposes the unified `agent` tool if at least one provider CLI can be resolved to a real executable. It prefers absolute paths discovered during install, then any absolute path overrides you provide in config.
@@ -68,10 +70,17 @@ When `agent-mcp` starts, it only exposes the unified `agent` tool if at least on
   - Absolute path: `GEMINI_CLI_NAME=/path/to/custom/gemini`
   - Relative paths are rejected, the same as `CLAUDE_CLI_NAME`
 
+- `OPENCODE_CLI_NAME`: Override the OpenCode CLI binary name or provide an absolute path (default: `opencode`).
+  - Simple name: `OPENCODE_CLI_NAME=opencode-nightly`
+  - Absolute path: `OPENCODE_CLI_NAME=/path/to/custom/opencode`
+  - Relative paths are rejected, the same as `CLAUDE_CLI_NAME`
+
 - `QWEN_CLI_NAME`: Override the Qwen CLI binary name or provide an absolute path (default: `qwen`).
   - Simple name: `QWEN_CLI_NAME=qwen-preview`
   - Absolute path: `QWEN_CLI_NAME=/path/to/custom/qwen`
   - Relative paths are rejected, the same as `CLAUDE_CLI_NAME`
+
+- `OPENCODE_MODEL`: Optional default model override for the `opencode` provider. `agent-mcp` passes it as `opencode run --model <value>`.
 
 - `AGENT_MCP_EXECUTION_TIMEOUT_MS`: Default server-side timeout for provider CLI executions in milliseconds (default: `300000`, or 5 minutes). Set to `0` to disable the adapter timeout entirely for long-running jobs.
 
@@ -106,7 +115,7 @@ To use a custom provider CLI binary name, you can specify the relevant environme
     },
 ```
 
-To expose Claude Code, Codex, Gemini, and Qwen with custom binaries:
+To expose Claude Code, Codex, Gemini, OpenCode, and Qwen with custom binaries:
 
 ```json
     "agent-mcp": {
@@ -119,6 +128,7 @@ To expose Claude Code, Codex, Gemini, and Qwen with custom binaries:
         "CLAUDE_CLI_NAME": "claude-custom",
         "CODEX_CLI_NAME": "codex",
         "GEMINI_CLI_NAME": "gemini",
+        "OPENCODE_CLI_NAME": "opencode",
         "QWEN_CLI_NAME": "qwen"
       }
     },
@@ -162,6 +172,12 @@ codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check "hel
 
 ```bash
 gemini -p "hello" -y -o text
+```
+
+### OpenCode
+
+```bash
+opencode run --format json --dangerously-skip-permissions --dir "$PWD" "hello"
 ```
 
 ### Qwen
@@ -212,8 +228,9 @@ Runs a provider-backed coding agent through one shared async job path. The serve
 
 **Arguments:**
 
-- `provider` (string, required when starting): One of `claude_code`, `codex`, `gemini`, or `qwen`.
+- `provider` (string, required when starting): One of `claude_code`, `codex`, `gemini`, `opencode`, or `qwen`.
 - `prompt` (string, required when starting): The prompt to send to the selected provider.
+- `model` (string, optional): Per-call model override in `provider/model` form. Currently supported by `gemini` and `opencode`.
 - `workFolder` (string, optional): Absolute working directory to use for file, git, and shell work when starting a new job.
 - `timeoutMs` (integer, optional): Maximum server-side execution time in milliseconds for the provider job. Set to `0` to disable the timeout for that job.
 - `waitMs` (integer, optional): How long this MCP call should wait before returning. Defaults to `25000`.
@@ -316,7 +333,8 @@ The server is now organized around a provider registry in [`src/server.ts`](./sr
 ## Troubleshooting
 
 - **"Command not found" (`agent-mcp`):** If installed globally, ensure the npm global bin directory is in your system's PATH. If using `npx`, ensure `npx` itself is working.
-- **"Command not found" (provider CLI):** Ensure the underlying CLI is installed correctly and that `CLAUDE_CLI_NAME`, `CODEX_CLI_NAME`, `GEMINI_CLI_NAME`, or `QWEN_CLI_NAME` points to a valid executable when overridden.
+- **"Command not found" (provider CLI):** Ensure the underlying CLI is installed correctly and that `CLAUDE_CLI_NAME`, `CODEX_CLI_NAME`, `GEMINI_CLI_NAME`, `OPENCODE_CLI_NAME`, or `QWEN_CLI_NAME` points to a valid executable when overridden.
+- **OpenCode model overrides fail:** `opencode models` shows the local model catalog, but not every catalog entry is guaranteed to be usable with your current auth. Use the default model if you want the least-surprising path, or pass `model` explicitly when you know the target provider is configured.
 - **Long-running jobs time out:** The provider runtime timeout and the MCP client request timeout are different. `timeoutMs` and `AGENT_MCP_EXECUTION_TIMEOUT_MS` only control the server-side provider job timeout. The unified `agent` tool now runs jobs in the background and waits only up to `waitMs` per MCP call, which avoids hard client limits on a single synchronous `tools/call`. If your client is especially strict, lower `waitMs` and keep polling with `jobId`.
 - **Permissions Issues:** Make sure you've run the "Important First-Time Setup" step.
 - **JSON Errors from Server:** If `MCP_CLAUDE_DEBUG` is `true`, error messages or logs might interfere with MCP's JSON parsing. Set to `false` for normal operation.
@@ -356,7 +374,8 @@ For detailed testing documentation, see our [E2E Testing Guide](./docs/e2e-testi
 
 The server's behavior can be customized using these environment variables:
 
-- `CLAUDE_CLI_NAME`, `CODEX_CLI_NAME`, `GEMINI_CLI_NAME`, `QWEN_CLI_NAME`: Override the executable name or provide an absolute path for each provider CLI.
+- `CLAUDE_CLI_NAME`, `CODEX_CLI_NAME`, `GEMINI_CLI_NAME`, `OPENCODE_CLI_NAME`, `QWEN_CLI_NAME`: Override the executable name or provide an absolute path for each provider CLI.
+- `OPENCODE_MODEL`: Set the default OpenCode model override in `provider/model` form.
 - `AGENT_MCP_EXECUTION_TIMEOUT_MS`: Set the default server-side execution timeout in milliseconds for all provider tool calls. Use `0` to disable the adapter timeout.
 - `MCP_CLAUDE_DEBUG`: Set to `true` for verbose debug logging from this MCP server. Default: `false`.
 - Provider-specific auth variables such as `GEMINI_API_KEY` or `OPENROUTER_API_KEY` should be passed through the MCP server environment when the underlying CLI requires them.

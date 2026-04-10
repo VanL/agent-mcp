@@ -2,7 +2,7 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ErrorCode, ListToolsRequestSchema, McpError, } from "@modelcontextprotocol/sdk/types.js";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -11,7 +11,7 @@ import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
 // Server version - update this when releasing new versions
-const SERVER_VERSION = "1.10.15";
+const SERVER_VERSION = "1.10.16";
 const debugMode = process.env.MCP_CLAUDE_DEBUG === "true";
 let isFirstToolUse = true;
 const serverStartupTime = new Date().toISOString();
@@ -22,17 +22,22 @@ const defaultJobWaitMs = 25000;
 const maxJobTailChars = 4000;
 const unifiedToolName = "agent";
 const unifiedToolTitle = "Agent Runner";
+const opencodeModelEnvVar = "OPENCODE_MODEL";
+const opencodeProbePrompt = "Reply with exactly OK.";
+const opencodeProbeTimeoutMs = 2500;
 const workFolderDescription = "Mandatory when using file operations or referencing any file. The working directory for the CLI execution. Must be an absolute path.";
 const timeoutMsDescription = "Optional maximum execution time in milliseconds for this tool call. Defaults to AGENT_MCP_EXECUTION_TIMEOUT_MS or 300000 (5 minutes). Set to 0 to disable the server-side timeout.";
 const waitMsDescription = `Optional number of milliseconds to wait in this MCP call before returning. Defaults to ${defaultJobWaitMs}ms. If the job is still running when the wait expires, the response includes a job ID that can be passed back to the same tool to continue waiting.`;
 const jobIdDescription = "Optional job ID from an earlier response. Pass this instead of prompt to keep waiting on an existing job.";
 const cancelDescription = "Optional. When true, cancels the existing job identified by jobId.";
 const providerDescription = "Provider to run for a new job. Required when starting with prompt. Omit when continuing an existing job with jobId.";
+const modelDescription = "Optional per-call model override in provider/model form. Currently supported by gemini and opencode when starting a new job.";
 const providerToolArgumentsSchema = z
     .object({
     provider: z.string().optional(),
     prompt: z.string().optional(),
     jobId: z.string().min(1).optional(),
+    model: z.string().min(1).optional(),
     workFolder: z.string().optional(),
     timeoutMs: z.number().int().nonnegative().optional(),
     waitMs: z.number().int().nonnegative().optional(),
@@ -74,6 +79,13 @@ const providerToolArgumentsSchema = z
             code: z.ZodIssueCode.custom,
             message: "workFolder can only be used when starting a new job with prompt.",
             path: ["workFolder"],
+        });
+    }
+    if (hasJobId && value.model !== undefined) {
+        ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "model can only be used when starting a new job with prompt.",
+            path: ["model"],
         });
     }
     if (hasJobId && value.timeoutMs !== undefined) {
@@ -162,13 +174,34 @@ function loadInstalledCliPaths() {
     }
 }
 const installedCliPaths = loadInstalledCliPaths();
-function buildUnifiedToolDescription(providers) {
+function buildUnifiedToolDescription(providers, options) {
     const providerList = providers
-        .map((provider) => `\`${provider.toolName}\` (${provider.displayName})`)
-        .join(", ");
+        .map((provider) => {
+        if (provider.toolName !== "opencode") {
+            return `- \`${provider.toolName}\` (${provider.displayName})`;
+        }
+        const details = [provider.displayName];
+        const probe = options?.opencodeProbe;
+        if (probe?.defaultModel) {
+            const sourceSuffix = probe.defaultModelSource === "env" ? ", env override" : "";
+            details.push(`default: \`${probe.defaultModel}\`${sourceSuffix}`);
+        }
+        if (probe && probe.modelCatalogFamilies.length > 0) {
+            details.push(`model families: ${probe.modelCatalogFamilies
+                .map((entry) => `\`${entry}\``)
+                .join(", ")} (auth varies)`);
+        }
+        if (probe && !probe.functional && probe.error) {
+            details.push(`probe failed: ${probe.error}`);
+        }
+        details.push("supports per-call `model` override");
+        return `- \`${provider.toolName}\` (${details.join("; ")})`;
+    })
+        .join("\n");
     return `${unifiedToolTitle}: Run a provider-backed coding agent non-interactively for code, file, Git, shell, and research tasks.
 
-Available providers: ${providerList}
+Available providers:
+${providerList}
 
 This tool uses one job-backed execution path for every provider.
 
@@ -185,7 +218,8 @@ Prompt tips:
 3. For analysis-only tasks, explicitly say no file modifications should be made.
 4. Ask for staged or commit-ready changes when you want a Git workflow result.
 5. Use \`timeoutMs\` to cap the provider runtime; set it to \`0\` to disable the server-side timeout.
-6. Use \`waitMs\` to control how long this MCP call waits before returning.`;
+6. Use \`waitMs\` to control how long this MCP call waits before returning.
+7. Use \`model\` when you want a specific provider/model target for a provider that supports it.`;
 }
 function parseExecutionTimeoutMs(rawValue, source) {
     if (typeof rawValue !== "string") {
@@ -424,6 +458,175 @@ function cleanupInvocation(invocation) {
         debugLog("[Debug] Failed to clean up provider temp directory:", error);
     }
 }
+export function parseOpencodeJsonOutput(stdout) {
+    const textParts = [];
+    for (const rawLine of stdout.split(/\r?\n/)) {
+        const line = rawLine.trim();
+        if (!line) {
+            continue;
+        }
+        try {
+            const event = JSON.parse(line);
+            const text = event.part?.text;
+            if (typeof text === "string" &&
+                (event.type === "text" || event.part?.type === "text")) {
+                textParts.push(text);
+            }
+        }
+        catch {
+            // Ignore non-JSON lines and fall back to raw stdout if needed.
+        }
+    }
+    if (textParts.length > 0) {
+        return textParts.join("");
+    }
+    return stdout;
+}
+function stripAnsi(value) {
+    let result = "";
+    let index = 0;
+    while (index < value.length) {
+        if (value[index] !== "\u001b" || value[index + 1] !== "[") {
+            result += value[index];
+            index += 1;
+            continue;
+        }
+        index += 2;
+        while (index < value.length && value[index] !== "m") {
+            index += 1;
+        }
+        if (index < value.length) {
+            index += 1;
+        }
+    }
+    return result;
+}
+function normalizeProviderFamily(value) {
+    return value
+        .toLowerCase()
+        .replaceAll(/[^a-z0-9]+/g, "-")
+        .replaceAll(/^-+|-+$/g, "");
+}
+function parseOpencodeDefaultModel(output) {
+    const cleanOutput = stripAnsi(output);
+    const match = cleanOutput.match(/^\s*>\s+[^·\r\n]+\s+·\s+([^\r\n]+?)\s*$/m);
+    if (!match) {
+        return undefined;
+    }
+    const model = match[1]?.trim();
+    return model && model.length > 0 ? model : undefined;
+}
+function parseOpencodeModelCatalogFamilies(output) {
+    const cleanOutput = stripAnsi(output);
+    const families = new Set();
+    for (const rawLine of cleanOutput.split(/\r?\n/)) {
+        const line = rawLine.trim();
+        if (!line.includes("/")) {
+            continue;
+        }
+        const family = normalizeProviderFamily(line.split("/", 1)[0] ?? "");
+        if (family.length > 0) {
+            families.add(family);
+        }
+    }
+    return [...families].sort();
+}
+export function detectOpencodeRunMode(execution) {
+    try {
+        const probe = spawnSync(execution.cliCommand, [...execution.cliArgsPrefix, "run", "--help"], {
+            encoding: "utf-8",
+            timeout: 2000,
+            windowsHide: true,
+        });
+        const combinedOutput = `${probe?.stdout ?? ""}\n${probe?.stderr ?? ""}`;
+        const normalizedOutput = combinedOutput.toLowerCase();
+        if (probe?.error) {
+            debugLog(`[Debug] Failed to probe ${execution.cliCommandDisplay} for opencode support:`, probe.error);
+            return false;
+        }
+        return (probe?.status === 0 &&
+            (normalizedOutput.includes("opencode run [message") ||
+                normalizedOutput.includes("run opencode with a message")));
+    }
+    catch (error) {
+        debugLog(`[Debug] Failed to probe ${execution.cliCommandDisplay} for opencode support:`, error);
+        return false;
+    }
+}
+function buildOpencodeInvocation(prompt, cwd, modelOverride = "") {
+    const args = [
+        "run",
+        "--format",
+        "json",
+        "--dangerously-skip-permissions",
+        "--dir",
+        cwd,
+    ];
+    if (modelOverride.length > 0) {
+        args.push("--model", modelOverride);
+    }
+    args.push(prompt);
+    return {
+        args,
+        invocationMode: "opencode-run",
+        resolvedModel: modelOverride.length > 0 ? modelOverride : undefined,
+    };
+}
+function probeOpencodeMetadata(execution) {
+    const checkedAt = new Date().toISOString();
+    const modelCatalogProbe = spawnSync(execution.cliCommand, [...execution.cliArgsPrefix, "models"], {
+        encoding: "utf-8",
+        timeout: 2000,
+        windowsHide: true,
+    });
+    const modelCatalogFamilies = parseOpencodeModelCatalogFamilies(`${modelCatalogProbe.stdout ?? ""}\n${modelCatalogProbe.stderr ?? ""}`);
+    const envDefaultModel = process.env[opencodeModelEnvVar]?.trim() ?? "";
+    const args = [
+        ...execution.cliArgsPrefix,
+        "run",
+        "--format",
+        "default",
+        "--dangerously-skip-permissions",
+        "--dir",
+        tmpdir(),
+    ];
+    if (envDefaultModel.length > 0) {
+        args.push("--model", envDefaultModel);
+    }
+    args.push(opencodeProbePrompt);
+    const runProbe = spawnSync(execution.cliCommand, args, {
+        encoding: "utf-8",
+        timeout: opencodeProbeTimeoutMs,
+        windowsHide: true,
+        cwd: tmpdir(),
+    });
+    const combinedOutput = `${runProbe.stdout ?? ""}\n${runProbe.stderr ?? ""}`;
+    const parsedDefaultModel = envDefaultModel.length > 0
+        ? envDefaultModel
+        : parseOpencodeDefaultModel(combinedOutput);
+    const functional = (runProbe.status === 0 && !runProbe.error) ||
+        (parsedDefaultModel !== undefined &&
+            !combinedOutput.includes("ProviderAuthError"));
+    let error;
+    if (!functional && runProbe.error) {
+        error = runProbe.error.message;
+    }
+    else if (!functional && runProbe.status !== 0) {
+        error = `exit ${runProbe.status ?? "unknown"}`;
+    }
+    return {
+        checkedAt,
+        functional,
+        defaultModel: parsedDefaultModel,
+        defaultModelSource: parsedDefaultModel === undefined
+            ? undefined
+            : envDefaultModel.length > 0
+                ? "env"
+                : "probe",
+        modelCatalogFamilies,
+        error,
+    };
+}
 const claudeProvider = {
     id: "claude",
     toolName: "claude_code",
@@ -438,6 +641,7 @@ const claudeProvider = {
     promptDescription: "The detailed natural language prompt for Claude to execute.",
     buildInvocation: ({ prompt }) => ({
         args: ["--dangerously-skip-permissions", "-p", prompt],
+        invocationMode: "default",
     }),
 };
 const codexProvider = {
@@ -467,6 +671,7 @@ const codexProvider = {
             ],
             outputFile,
             cleanupDir,
+            invocationMode: "default",
         };
     },
     extractOutput: ({ stdout }, invocation) => {
@@ -488,9 +693,18 @@ const geminiProvider = {
     cliEnvVar: "GEMINI_CLI_NAME",
     defaultCliCommand: "gemini",
     promptDescription: "The detailed natural language prompt for Gemini to execute.",
-    buildInvocation: ({ prompt }) => ({
-        args: ["-p", prompt, "-y", "-o", "text"],
-    }),
+    buildInvocation: ({ prompt, model }) => {
+        const args = ["-p", prompt, "-y", "-o", "text"];
+        if (model) {
+            args.unshift(model);
+            args.unshift("-m");
+        }
+        return {
+            args,
+            invocationMode: "default",
+            resolvedModel: model,
+        };
+    },
 };
 const qwenProvider = {
     id: "qwen",
@@ -503,12 +717,27 @@ const qwenProvider = {
     promptDescription: "The detailed natural language prompt for Qwen to execute.",
     buildInvocation: ({ prompt }) => ({
         args: ["-p", prompt, "-y", "-o", "text"],
+        invocationMode: "default",
     }),
+};
+const opencodeProvider = {
+    id: "opencode",
+    toolName: "opencode",
+    title: "OpenCode Agent",
+    displayName: "OpenCode",
+    recommendedUse: "OpenCode",
+    cliEnvVar: "OPENCODE_CLI_NAME",
+    defaultCliCommand: "opencode",
+    promptDescription: "The detailed natural language prompt for OpenCode to execute.",
+    detectInvocationMode: (execution) => detectOpencodeRunMode(execution) ? "opencode-run" : "default",
+    buildInvocation: ({ prompt, cwd, model }) => buildOpencodeInvocation(prompt, cwd, model ?? process.env[opencodeModelEnvVar]?.trim() ?? ""),
+    extractOutput: ({ stdout }) => parseOpencodeJsonOutput(stdout),
 };
 export const AGENT_PROVIDERS = [
     claudeProvider,
     codexProvider,
     geminiProvider,
+    opencodeProvider,
     qwenProvider,
 ];
 export function findClaudeCli() {
@@ -519,6 +748,9 @@ export function findCodexCli() {
 }
 export function findGeminiCli() {
     return resolveCliCommand(geminiProvider);
+}
+export function findOpencodeCli() {
+    return resolveCliCommand(opencodeProvider);
 }
 export function findQwenCli() {
     return resolveCliCommand(qwenProvider);
@@ -665,6 +897,7 @@ export class AgentCliServer {
     availableProviders;
     providersByToolName;
     jobs = new Map();
+    opencodeProbe;
     constructor() {
         this.availableProviders = AGENT_PROVIDERS.flatMap((provider) => {
             const cliCommand = resolveAvailableCliCommand(provider);
@@ -672,13 +905,23 @@ export class AgentCliServer {
                 return [];
             }
             const execution = resolveProviderExecution(cliCommand);
+            const invocationMode = provider.detectInvocationMode?.(execution) ?? "default";
+            if (provider.id === "opencode" && invocationMode !== "opencode-run") {
+                console.warn(`[Warning] ${provider.displayName} CLI at ${execution.cliCommandDisplay} does not support "run". ${provider.toolName} will not be exposed.`);
+                return [];
+            }
             const runtime = {
                 ...provider,
                 ...execution,
+                invocationMode,
             };
-            console.error(`[Setup] Using ${provider.displayName} CLI command/path: ${runtime.cliCommandDisplay} (${provider.toolName})`);
+            console.error(`[Setup] Using ${provider.displayName} CLI command/path: ${runtime.cliCommandDisplay} (${provider.toolName}, mode: ${runtime.invocationMode})`);
             return [runtime];
         });
+        const opencodeRuntime = this.availableProviders.find((provider) => provider.toolName === "opencode");
+        this.opencodeProbe = opencodeRuntime
+            ? probeOpencodeMetadata(opencodeRuntime)
+            : null;
         if (this.availableProviders.length === 0) {
             console.warn("[Warning] No agent CLIs were found. agent-mcp will start without exposing any tools.");
         }
@@ -715,6 +958,13 @@ export class AgentCliServer {
         }
         return provider;
     }
+    validateProviderSpecificArguments(provider, args) {
+        if (args.model &&
+            provider.toolName !== "gemini" &&
+            provider.toolName !== "opencode") {
+            throw new McpError(ErrorCode.InvalidParams, `model is not supported for provider "${provider.toolName}".`);
+        }
+    }
     getJobOrThrow(jobId) {
         const job = this.jobs.get(jobId);
         if (!job) {
@@ -728,11 +978,13 @@ export class AgentCliServer {
         }
         job.completionListeners.clear();
     }
-    startJob(provider, prompt, cwd, executionTimeoutMs) {
+    startJob(provider, prompt, cwd, executionTimeoutMs, model) {
         this.logStartupOnce(provider);
         const invocation = provider.buildInvocation({
             prompt,
             cwd,
+            model,
+            invocationMode: provider.invocationMode,
         });
         const executionArgs = [...provider.cliArgsPrefix, ...invocation.args];
         debugLog(`[Debug] Starting ${provider.displayName} job in CWD "${cwd}" (timeout: ${formatTimeoutMs(executionTimeoutMs)})`);
@@ -900,6 +1152,9 @@ export class AgentCliServer {
             `Elapsed: ${getElapsedMs(job)}ms`,
             `Call ${unifiedToolName} again with {"jobId":"${job.id}","waitMs":${nextWaitMs}} to keep waiting.`,
         ];
+        if (job.invocation.resolvedModel) {
+            lines.splice(2, 0, `Model: ${job.invocation.resolvedModel}`);
+        }
         if (stdoutTail.length > 0) {
             lines.push("", "Stdout tail:", stdoutTail);
         }
@@ -955,7 +1210,9 @@ export class AgentCliServer {
             tools: [
                 {
                     name: unifiedToolName,
-                    description: buildUnifiedToolDescription(this.availableProviders),
+                    description: buildUnifiedToolDescription(this.availableProviders, {
+                        opencodeProbe: this.opencodeProbe,
+                    }),
                     inputSchema: {
                         type: "object",
                         properties: {
@@ -967,6 +1224,10 @@ export class AgentCliServer {
                             prompt: {
                                 type: "string",
                                 description: "The detailed natural language prompt for a new job. Provide this together with provider.",
+                            },
+                            model: {
+                                type: "string",
+                                description: modelDescription,
                             },
                             jobId: {
                                 type: "string",
@@ -1020,10 +1281,11 @@ export class AgentCliServer {
                 }
                 else {
                     provider = this.getProviderOrThrow(parsedArguments.provider);
+                    this.validateProviderSpecificArguments(provider, parsedArguments);
                     const effectiveCwd = resolveWorkingDirectory(parsedArguments.workFolder);
                     const executionTimeoutMs = resolveExecutionTimeoutMs(parsedArguments.timeoutMs);
                     debugLog(`[Debug] Starting ${provider.displayName} job with prompt: "${parsedArguments.prompt}" in CWD: "${effectiveCwd}" (timeout: ${formatTimeoutMs(executionTimeoutMs)})`);
-                    job = this.startJob(provider, parsedArguments.prompt, effectiveCwd, executionTimeoutMs);
+                    job = this.startJob(provider, parsedArguments.prompt, effectiveCwd, executionTimeoutMs, parsedArguments.model);
                 }
                 stopProgressHeartbeat = startProgressHeartbeat(extra, provider.displayName);
                 if (parsedArguments.cancel) {
