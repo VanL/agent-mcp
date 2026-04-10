@@ -53,7 +53,8 @@ describe("Version Print on First Use", () => {
 
   it("should print version and startup time only on first use", async () => {
     // First tool call
-    await client.callTool("claude_code", {
+    await client.callTool("agent", {
+      provider: "claude_code",
       prompt: 'echo "test 1"',
       workFolder: testDir,
     });
@@ -81,7 +82,8 @@ describe("Version Print on First Use", () => {
     consoleErrorSpy.mockClear();
 
     // Second tool call
-    await client.callTool("claude_code", {
+    await client.callTool("agent", {
+      provider: "claude_code",
       prompt: 'echo "test 2"',
       workFolder: testDir,
     });
@@ -91,7 +93,8 @@ describe("Version Print on First Use", () => {
     expect(secondVersionCall).toBeUndefined();
 
     // Third tool call
-    await client.callTool("claude_code", {
+    await client.callTool("agent", {
+      provider: "claude_code",
       prompt: 'echo "test 3"',
       workFolder: testDir,
     });

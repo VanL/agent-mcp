@@ -8,7 +8,8 @@ import {
   McpError,
   type ServerResult,
 } from "@modelcontextprotocol/sdk/types.js";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdtempSync,
@@ -23,7 +24,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
 
 // Server version - update this when releasing new versions
-const SERVER_VERSION = "1.10.14";
+const SERVER_VERSION = "1.10.15";
 
 const debugMode = process.env.MCP_CLAUDE_DEBUG === "true";
 let isFirstToolUse = true;
@@ -31,19 +32,89 @@ const serverStartupTime = new Date().toISOString();
 const defaultExecutionTimeoutMs = 300000; // 5 minutes
 const executionTimeoutEnvVar = "AGENT_MCP_EXECUTION_TIMEOUT_MS";
 const progressHeartbeatIntervalMs = 5000;
+const defaultJobWaitMs = 25000;
+const maxJobTailChars = 4000;
+const unifiedToolName = "agent";
+const unifiedToolTitle = "Agent Runner";
 
 const workFolderDescription =
   "Mandatory when using file operations or referencing any file. The working directory for the CLI execution. Must be an absolute path.";
 const timeoutMsDescription =
   "Optional maximum execution time in milliseconds for this tool call. Defaults to AGENT_MCP_EXECUTION_TIMEOUT_MS or 300000 (5 minutes). Set to 0 to disable the server-side timeout.";
+const waitMsDescription = `Optional number of milliseconds to wait in this MCP call before returning. Defaults to ${defaultJobWaitMs}ms. If the job is still running when the wait expires, the response includes a job ID that can be passed back to the same tool to continue waiting.`;
+const jobIdDescription =
+  "Optional job ID from an earlier response. Pass this instead of prompt to keep waiting on an existing job.";
+const cancelDescription =
+  "Optional. When true, cancels the existing job identified by jobId.";
+const providerDescription =
+  "Provider to run for a new job. Required when starting with prompt. Omit when continuing an existing job with jobId.";
 
-const toolArgumentsSchema = z.object({
-  prompt: z.string(),
-  workFolder: z.string().optional(),
-  timeoutMs: z.number().int().nonnegative().optional(),
-});
+const providerToolArgumentsSchema = z
+  .object({
+    provider: z.string().optional(),
+    prompt: z.string().optional(),
+    jobId: z.string().min(1).optional(),
+    workFolder: z.string().optional(),
+    timeoutMs: z.number().int().nonnegative().optional(),
+    waitMs: z.number().int().nonnegative().optional(),
+    cancel: z.boolean().optional(),
+  })
+  .superRefine((value, ctx) => {
+    const hasPrompt = typeof value.prompt === "string";
+    const hasJobId = typeof value.jobId === "string";
 
-type ToolArguments = z.infer<typeof toolArgumentsSchema>;
+    if (hasPrompt === hasJobId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Provide exactly one of prompt or jobId.",
+        path: hasPrompt ? ["jobId"] : ["prompt"],
+      });
+    }
+
+    if (hasPrompt && value.cancel) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "cancel can only be used together with jobId.",
+        path: ["cancel"],
+      });
+    }
+
+    if (hasPrompt && typeof value.provider !== "string") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "provider is required when starting a new job with prompt.",
+        path: ["provider"],
+      });
+    }
+
+    if (hasJobId && value.provider !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "provider cannot be used together with jobId.",
+        path: ["provider"],
+      });
+    }
+
+    if (hasJobId && value.workFolder !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "workFolder can only be used when starting a new job with prompt.",
+        path: ["workFolder"],
+      });
+    }
+
+    if (hasJobId && value.timeoutMs !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "timeoutMs can only be used when starting a new job with prompt.",
+        path: ["timeoutMs"],
+      });
+    }
+  });
+
+type ProviderToolArguments = z.infer<typeof providerToolArgumentsSchema>;
 
 interface ProgressNotificationExtra {
   _meta?: {
@@ -64,10 +135,34 @@ interface SpawnResult {
   stderr: string;
 }
 
+type AgentJobStatus = "running" | "completed" | "failed" | "cancelled";
+
 interface ProviderInvocation {
   args: string[];
   outputFile?: string;
   cleanupDir?: string;
+}
+
+interface AgentJob {
+  id: string;
+  provider: AgentProviderRuntime;
+  prompt: string;
+  cwd: string;
+  executionTimeoutMs: number;
+  status: AgentJobStatus;
+  startedAt: string;
+  finishedAt?: string;
+  stdout: string;
+  stderr: string;
+  result?: string;
+  error?: string;
+  cancelReason?: string;
+  invocation: ProviderInvocation;
+  childProcess: ChildProcess;
+  completionListeners: Set<() => void>;
+  timedOut: boolean;
+  cancellationRequested: boolean;
+  timeoutHandle: NodeJS.Timeout | null;
 }
 
 interface AgentProviderConfig {
@@ -206,23 +301,33 @@ function loadInstalledCliPaths(): InstalledCliPathMap {
 
 const installedCliPaths = loadInstalledCliPaths();
 
-function buildToolDescription(provider: AgentProviderConfig): string {
-  return `${provider.title}: Run ${provider.displayName} non-interactively for code, file, Git, shell, and research tasks. Use \`workFolder\` for contextual execution.
+function buildUnifiedToolDescription(
+  providers: readonly AgentProviderRuntime[],
+): string {
+  const providerList = providers
+    .map((provider) => `\`${provider.toolName}\` (${provider.displayName})`)
+    .join(", ");
 
-Use this tool when you specifically want ${provider.recommendedUse}.
+  return `${unifiedToolTitle}: Run a provider-backed coding agent non-interactively for code, file, Git, shell, and research tasks.
 
-• File ops: Create, read, edit, move, copy, delete, list, and inspect files
-• Code: Generate, explain, refactor, review, and fix code
-• Git: Stage, commit, branch, push, inspect diffs, and prepare PRs
-• Terminal: Run project commands, tests, linters, and build steps
-• Web: Search or inspect docs when the provider supports it
+Available providers: ${providerList}
+
+This tool uses one job-backed execution path for every provider.
+
+How to use it:
+1. Start a job with \`provider\` and \`prompt\`.
+2. The server waits up to \`waitMs\` in this MCP call.
+3. If the job finishes in time, you get the final result directly.
+4. If it is still running, call the same tool again with \`jobId\` to keep waiting.
+5. Cancel a running job by calling the same tool with \`jobId\` and \`cancel: true\`.
 
 Prompt tips:
 1. Be concise and explicit for multi-step work.
 2. Set \`workFolder\` to the project root so relative paths resolve correctly.
 3. For analysis-only tasks, explicitly say no file modifications should be made.
 4. Ask for staged or commit-ready changes when you want a Git workflow result.
-5. Use \`timeoutMs\` for long-running jobs; set it to \`0\` to disable the server-side timeout.`;
+5. Use \`timeoutMs\` to cap the provider runtime; set it to \`0\` to disable the server-side timeout.
+6. Use \`waitMs\` to control how long this MCP call waits before returning.`;
 }
 
 function parseExecutionTimeoutMs(
@@ -495,11 +600,12 @@ export function resolveProviderExecution(
   };
 }
 
-function parseToolArguments(
+function parseToolArguments<TSchema extends z.ZodTypeAny>(
+  schema: TSchema,
   toolArguments: unknown,
   toolName: string,
-): ToolArguments {
-  const parsedArguments = toolArgumentsSchema.safeParse(toolArguments);
+): z.infer<TSchema> {
+  const parsedArguments = schema.safeParse(toolArguments);
   if (parsedArguments.success) {
     return parsedArguments.data;
   }
@@ -514,6 +620,44 @@ function parseToolArguments(
     ErrorCode.InvalidParams,
     `Invalid arguments for ${toolName}${issuePath}: ${issueMessage}`,
   );
+}
+
+function truncateTail(value: string): string {
+  if (value.length <= maxJobTailChars) {
+    return value;
+  }
+
+  return `[truncated to last ${maxJobTailChars} chars]\n${value.slice(-maxJobTailChars)}`;
+}
+
+function getElapsedMs(job: AgentJob): number {
+  const startedAt = new Date(job.startedAt).getTime();
+  const finishedAt = job.finishedAt
+    ? new Date(job.finishedAt).getTime()
+    : Date.now();
+  return Math.max(0, finishedAt - startedAt);
+}
+
+function killChildProcessTree(
+  childProcess: ChildProcess,
+  command: string,
+  reason: string,
+): void {
+  debugLog(`[Spawn ${reason}] Killing command: ${command}`);
+
+  if (process.platform !== "win32" && typeof childProcess.pid === "number") {
+    try {
+      process.kill(-childProcess.pid, "SIGKILL");
+      return;
+    } catch (error) {
+      debugLog(
+        `[Spawn ${reason}] Failed to kill process group, falling back to child process kill:`,
+        error,
+      );
+    }
+  }
+
+  childProcess.kill("SIGKILL");
 }
 
 function resolveWorkingDirectory(workFolder?: string): string {
@@ -744,27 +888,6 @@ export async function spawnAsync(
       reject(error);
     };
 
-    const killChildProcess = (reason: string): void => {
-      debugLog(`[Spawn ${reason}] Killing command: ${command}`);
-
-      if (
-        process.platform !== "win32" &&
-        typeof childProcess.pid === "number"
-      ) {
-        try {
-          process.kill(-childProcess.pid, "SIGKILL");
-          return;
-        } catch (error) {
-          debugLog(
-            `[Spawn ${reason}] Failed to kill process group, falling back to child process kill:`,
-            error,
-          );
-        }
-      }
-
-      childProcess.kill("SIGKILL");
-    };
-
     const timeoutHandle =
       typeof options?.timeout === "number" && options.timeout > 0
         ? setTimeout(() => {
@@ -773,7 +896,11 @@ export async function spawnAsync(
             }
 
             timedOut = true;
-            killChildProcess(`Timeout after ${options.timeout}ms`);
+            killChildProcessTree(
+              childProcess,
+              command,
+              `Timeout after ${options.timeout}ms`,
+            );
           }, options.timeout)
         : null;
 
@@ -783,7 +910,7 @@ export async function spawnAsync(
       }
 
       aborted = true;
-      killChildProcess("Abort");
+      killChildProcessTree(childProcess, command, "Abort");
     };
 
     if (options?.signal) {
@@ -894,6 +1021,7 @@ export class AgentCliServer {
   private readonly server: Server;
   private readonly availableProviders: AgentProviderRuntime[];
   private readonly providersByToolName: Map<string, AgentProviderRuntime>;
+  private readonly jobs = new Map<string, AgentJob>();
 
   constructor() {
     this.availableProviders = AGENT_PROVIDERS.flatMap((provider) => {
@@ -928,7 +1056,7 @@ export class AgentCliServer {
     this.server = new Server(
       {
         name: "agent-mcp",
-        version: "1.0.0",
+        version: SERVER_VERSION,
       },
       {
         capabilities: {
@@ -941,36 +1069,424 @@ export class AgentCliServer {
 
     this.server.onerror = (error) => console.error("[Error]", error);
     process.on("SIGINT", async () => {
+      this.cancelAllJobs("agent-mcp server shutting down");
       await this.server.close();
       process.exit(0);
     });
   }
 
+  private logStartupOnce(provider: AgentProviderRuntime): void {
+    if (isFirstToolUse) {
+      console.error(
+        `${provider.toolName} v${SERVER_VERSION} started at ${serverStartupTime}`,
+      );
+      isFirstToolUse = false;
+    }
+  }
+
+  private getProviderOrThrow(providerName: string): AgentProviderRuntime {
+    const provider = this.providersByToolName.get(providerName);
+    if (!provider) {
+      const availableProviders = this.availableProviders
+        .map((entry) => entry.toolName)
+        .join(", ");
+      throw new McpError(
+        ErrorCode.InvalidParams,
+        `Unknown provider "${providerName}". Available providers: ${availableProviders}`,
+      );
+    }
+
+    return provider;
+  }
+
+  private getJobOrThrow(jobId: string): AgentJob {
+    const job = this.jobs.get(jobId);
+    if (!job) {
+      throw new McpError(
+        ErrorCode.InvalidParams,
+        `Unknown job ID "${jobId}". Start a new job with provider and prompt first.`,
+      );
+    }
+
+    return job;
+  }
+
+  private notifyJobCompletion(job: AgentJob): void {
+    for (const listener of job.completionListeners) {
+      listener();
+    }
+    job.completionListeners.clear();
+  }
+
+  private startJob(
+    provider: AgentProviderRuntime,
+    prompt: string,
+    cwd: string,
+    executionTimeoutMs: number,
+  ): AgentJob {
+    this.logStartupOnce(provider);
+
+    const invocation = provider.buildInvocation({
+      prompt,
+      cwd,
+    });
+    const executionArgs = [...provider.cliArgsPrefix, ...invocation.args];
+
+    debugLog(
+      `[Debug] Starting ${provider.displayName} job in CWD "${cwd}" (timeout: ${formatTimeoutMs(executionTimeoutMs)})`,
+    );
+    debugLog(
+      `[Debug] Invoking ${provider.displayName} CLI: ${provider.cliCommandDisplay} ${executionArgs.join(" ")}`,
+    );
+
+    const childProcess = spawn(provider.cliCommand, executionArgs, {
+      shell: false,
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+      detached: process.platform !== "win32",
+    });
+
+    const job: AgentJob = {
+      id: randomUUID(),
+      provider,
+      prompt,
+      cwd,
+      executionTimeoutMs,
+      status: "running",
+      startedAt: new Date().toISOString(),
+      stdout: "",
+      stderr: "",
+      invocation,
+      childProcess,
+      completionListeners: new Set(),
+      timedOut: false,
+      cancellationRequested: false,
+      timeoutHandle: null,
+    };
+
+    this.jobs.set(job.id, job);
+
+    let settled = false;
+    const finishJob = (
+      updater: (code: number | null, signal: NodeJS.Signals | null) => void,
+      code: number | null,
+      signal: NodeJS.Signals | null,
+    ): void => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      if (job.timeoutHandle) {
+        clearTimeout(job.timeoutHandle);
+        job.timeoutHandle = null;
+      }
+
+      updater(code, signal);
+      job.finishedAt = new Date().toISOString();
+      cleanupInvocation(job.invocation);
+      this.notifyJobCompletion(job);
+    };
+
+    if (executionTimeoutMs > 0) {
+      job.timeoutHandle = setTimeout(() => {
+        if (job.status !== "running") {
+          return;
+        }
+
+        job.timedOut = true;
+        killChildProcessTree(
+          childProcess,
+          provider.cliCommandDisplay,
+          `Timeout after ${executionTimeoutMs}ms`,
+        );
+      }, executionTimeoutMs);
+      job.timeoutHandle.unref?.();
+    }
+
+    childProcess.stdout?.on("data", (data) => {
+      job.stdout += data.toString();
+    });
+
+    childProcess.stderr?.on("data", (data) => {
+      const chunk = data.toString();
+      job.stderr += chunk;
+      debugLog(`[Job ${job.id} ${provider.displayName} Stderr Chunk] ${chunk}`);
+    });
+
+    childProcess.on("error", (error: NodeJS.ErrnoException) => {
+      debugLog(
+        `[Error] ${provider.displayName} background job ${job.id} emitted an error:`,
+        error,
+      );
+      finishJob(
+        () => {
+          job.status = "failed";
+          job.error = `${provider.displayName} CLI execution failed: Spawn error: ${error.message}`;
+        },
+        null,
+        null,
+      );
+    });
+
+    childProcess.on("close", (code, signal) => {
+      debugLog(
+        `[Debug] ${provider.displayName} background job ${job.id} closed with code ${code}, signal ${signal ?? "none"}`,
+      );
+
+      finishJob(
+        (finalCode, finalSignal) => {
+          if (job.timedOut) {
+            const timeoutDetails = `Command timed out after ${executionTimeoutMs}ms\nSignal: ${finalSignal ?? "unknown"}\nStderr: ${job.stderr.trim()}\nStdout: ${job.stdout.trim()}`;
+            job.status = "failed";
+            job.error = `${provider.displayName} CLI command timed out after ${formatTimeoutMs(executionTimeoutMs)}. Details: ${timeoutDetails}`;
+            return;
+          }
+
+          if (job.cancellationRequested) {
+            job.status = "cancelled";
+            job.error =
+              job.cancelReason ??
+              `${provider.displayName} job ${job.id} was cancelled.`;
+            return;
+          }
+
+          if (finalCode === 0) {
+            const result = provider.extractOutput?.(
+              {
+                stdout: job.stdout,
+                stderr: job.stderr,
+              },
+              invocation,
+            );
+            job.status = "completed";
+            job.result = result ?? job.stdout;
+            return;
+          }
+
+          const signalMessage = finalSignal ? `\nSignal: ${finalSignal}` : "";
+          job.status = "failed";
+          job.error = `${provider.displayName} CLI execution failed: Command failed with exit code ${finalCode}${signalMessage}\nStderr: ${job.stderr.trim()}\nStdout: ${job.stdout.trim()}`;
+        },
+        code,
+        signal,
+      );
+    });
+
+    return job;
+  }
+
+  private cancelJob(job: AgentJob, reason: string): void {
+    if (job.status !== "running" || job.cancellationRequested) {
+      return;
+    }
+
+    job.cancellationRequested = true;
+    job.cancelReason = reason;
+    killChildProcessTree(
+      job.childProcess,
+      job.provider.cliCommandDisplay,
+      `Cancel job ${job.id}`,
+    );
+  }
+
+  private cancelAllJobs(reason: string): void {
+    for (const job of this.jobs.values()) {
+      this.cancelJob(job, reason);
+    }
+  }
+
+  private waitForJob(
+    job: AgentJob,
+    waitMs: number,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    if (job.status !== "running" || waitMs <= 0) {
+      return Promise.resolve();
+    }
+
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let timeoutHandle: NodeJS.Timeout | null = null;
+
+      const cleanup = (): void => {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+        if (timeoutHandle) {
+          clearTimeout(timeoutHandle);
+        }
+        signal?.removeEventListener("abort", onAbort);
+        job.completionListeners.delete(onComplete);
+      };
+
+      const onComplete = (): void => {
+        cleanup();
+        resolve();
+      };
+
+      const onAbort = (): void => {
+        cleanup();
+        const reason = signal?.reason;
+        reject(
+          reason instanceof Error
+            ? reason
+            : new Error(String(reason ?? "Request aborted while waiting")),
+        );
+      };
+
+      timeoutHandle = setTimeout(() => {
+        cleanup();
+        resolve();
+      }, waitMs);
+      timeoutHandle.unref?.();
+
+      job.completionListeners.add(onComplete);
+
+      if (signal?.aborted) {
+        onAbort();
+        return;
+      }
+
+      signal?.addEventListener("abort", onAbort, { once: true });
+
+      if (job.status !== "running") {
+        onComplete();
+      }
+    });
+  }
+
+  private buildRunningJobResponse(job: AgentJob, waitMs: number): ServerResult {
+    const stdoutTail = truncateTail(job.stdout.trim());
+    const stderrTail = truncateTail(job.stderr.trim());
+    const nextWaitMs = waitMs > 0 ? waitMs : defaultJobWaitMs;
+    const lines = [
+      `Job ${job.id} is still running with ${job.provider.displayName}.`,
+      `Elapsed: ${getElapsedMs(job)}ms`,
+      `Call ${unifiedToolName} again with {"jobId":"${job.id}","waitMs":${nextWaitMs}} to keep waiting.`,
+    ];
+
+    if (stdoutTail.length > 0) {
+      lines.push("", "Stdout tail:", stdoutTail);
+    }
+
+    if (stderrTail.length > 0) {
+      lines.push("", "Stderr tail:", stderrTail);
+    }
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: lines.join("\n"),
+        },
+      ],
+    };
+  }
+
+  private buildCompletedJobResponse(job: AgentJob): ServerResult {
+    return {
+      content: [
+        {
+          type: "text",
+          text: job.result ?? "",
+        },
+      ],
+    };
+  }
+
+  private buildCancelledJobResponse(job: AgentJob): ServerResult {
+    return {
+      content: [
+        {
+          type: "text",
+          text:
+            job.error ??
+            `${job.provider.displayName} job ${job.id} was cancelled.`,
+        },
+      ],
+    };
+  }
+
+  private buildJobResponse(job: AgentJob, waitMs: number): ServerResult {
+    switch (job.status) {
+      case "completed":
+        return this.buildCompletedJobResponse(job);
+      case "running":
+        return this.buildRunningJobResponse(job, waitMs);
+      case "cancelled":
+        return this.buildCancelledJobResponse(job);
+      case "failed":
+        throw new McpError(
+          ErrorCode.InternalError,
+          job.error ??
+            `${job.provider.displayName} job ${job.id} failed without an error message.`,
+        );
+    }
+
+    throw new McpError(
+      ErrorCode.InternalError,
+      `Unknown job status for ${job.id}.`,
+    );
+  }
+
   private setupToolHandlers(): void {
     this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
-      tools: this.availableProviders.map((provider) => ({
-        name: provider.toolName,
-        description: buildToolDescription(provider),
-        inputSchema: {
-          type: "object",
-          properties: {
-            prompt: {
-              type: "string",
-              description: provider.promptDescription,
+      tools: [
+        {
+          name: unifiedToolName,
+          description: buildUnifiedToolDescription(this.availableProviders),
+          inputSchema: {
+            type: "object",
+            properties: {
+              provider: {
+                type: "string",
+                enum: this.availableProviders.map(
+                  (provider) => provider.toolName,
+                ),
+                description: providerDescription,
+              },
+              prompt: {
+                type: "string",
+                description:
+                  "The detailed natural language prompt for a new job. Provide this together with provider.",
+              },
+              jobId: {
+                type: "string",
+                description: jobIdDescription,
+              },
+              workFolder: {
+                type: "string",
+                description: workFolderDescription,
+              },
+              timeoutMs: {
+                type: "integer",
+                minimum: 0,
+                description: timeoutMsDescription,
+              },
+              waitMs: {
+                type: "integer",
+                minimum: 0,
+                description: waitMsDescription,
+              },
+              cancel: {
+                type: "boolean",
+                description: cancelDescription,
+              },
             },
-            workFolder: {
-              type: "string",
-              description: workFolderDescription,
-            },
-            timeoutMs: {
-              type: "integer",
-              minimum: 0,
-              description: timeoutMsDescription,
-            },
+            anyOf: [
+              {
+                required: ["provider", "prompt"],
+              },
+              {
+                required: ["jobId"],
+              },
+            ],
           },
-          required: ["prompt"],
         },
-      })),
+      ],
     }));
 
     this.server.setRequestHandler(
@@ -979,119 +1495,91 @@ export class AgentCliServer {
         debugLog("[Debug] Handling CallToolRequest:", args);
 
         const toolName = args.params.name;
-        const provider = this.providersByToolName.get(toolName);
-        if (!provider) {
+        if (toolName !== unifiedToolName) {
           throw new McpError(
             ErrorCode.MethodNotFound,
             `Tool ${toolName} not found`,
           );
         }
 
-        const parsedArguments = parseToolArguments(
+        const parsedArguments: ProviderToolArguments = parseToolArguments(
+          providerToolArgumentsSchema,
           args.params.arguments,
           toolName,
         );
-        const effectiveCwd = resolveWorkingDirectory(
-          parsedArguments.workFolder,
-        );
-        const executionTimeoutMs = resolveExecutionTimeoutMs(
-          parsedArguments.timeoutMs,
-        );
+
+        let job: AgentJob;
+        let provider: AgentProviderRuntime;
+        let stopProgressHeartbeat: (() => void) | undefined;
 
         try {
-          debugLog(
-            `[Debug] Attempting to execute ${provider.displayName} CLI with prompt: "${parsedArguments.prompt}" in CWD: "${effectiveCwd}" (timeout: ${formatTimeoutMs(executionTimeoutMs)})`,
-          );
-
-          if (isFirstToolUse) {
-            console.error(
-              `${provider.toolName} v${SERVER_VERSION} started at ${serverStartupTime}`,
+          if (parsedArguments.jobId) {
+            job = this.getJobOrThrow(parsedArguments.jobId);
+            provider = job.provider;
+          } else {
+            provider = this.getProviderOrThrow(parsedArguments.provider!);
+            const effectiveCwd = resolveWorkingDirectory(
+              parsedArguments.workFolder,
             );
-            isFirstToolUse = false;
+            const executionTimeoutMs = resolveExecutionTimeoutMs(
+              parsedArguments.timeoutMs,
+            );
+
+            debugLog(
+              `[Debug] Starting ${provider.displayName} job with prompt: "${parsedArguments.prompt}" in CWD: "${effectiveCwd}" (timeout: ${formatTimeoutMs(executionTimeoutMs)})`,
+            );
+            job = this.startJob(
+              provider,
+              parsedArguments.prompt!,
+              effectiveCwd,
+              executionTimeoutMs,
+            );
           }
 
-          const invocation = provider.buildInvocation({
-            prompt: parsedArguments.prompt,
-            cwd: effectiveCwd,
-          });
-          const stopProgressHeartbeat = startProgressHeartbeat(
+          stopProgressHeartbeat = startProgressHeartbeat(
             extra,
             provider.displayName,
           );
 
-          try {
-            const executionArgs = [
-              ...provider.cliArgsPrefix,
-              ...invocation.args,
-            ];
-            debugLog(
-              `[Debug] Invoking ${provider.displayName} CLI: ${provider.cliCommandDisplay} ${executionArgs.join(" ")}`,
+          if (parsedArguments.cancel) {
+            this.cancelJob(
+              job,
+              `${provider.displayName} job ${job.id} was cancelled by request.`,
             );
-            const result = await spawnAsync(
-              provider.cliCommand,
-              executionArgs,
-              {
-                timeout: executionTimeoutMs,
-                cwd: effectiveCwd,
-                signal: extra?.signal,
-              },
-            );
-
-            debugLog(
-              `[Debug] ${provider.displayName} CLI stdout:`,
-              result.stdout.trim(),
-            );
-            if (result.stderr) {
-              debugLog(
-                `[Debug] ${provider.displayName} CLI stderr:`,
-                result.stderr.trim(),
-              );
-            }
-
-            const output =
-              provider.extractOutput?.(result, invocation) ?? result.stdout;
-            return { content: [{ type: "text", text: output }] };
-          } finally {
-            stopProgressHeartbeat();
-            cleanupInvocation(invocation);
           }
+
+          await this.waitForJob(
+            job,
+            parsedArguments.waitMs ?? defaultJobWaitMs,
+            extra?.signal,
+          );
+
+          return this.buildJobResponse(
+            job,
+            parsedArguments.waitMs ?? defaultJobWaitMs,
+          );
         } catch (error: any) {
           if (extra?.signal?.aborted) {
-            debugLog(
-              `[Debug] ${provider.displayName} CLI request was cancelled by the client.`,
-            );
+            debugLog("[Debug] agent tool request was cancelled by the client.");
             throw error;
           }
 
-          debugLog(
-            `[Error] Error executing ${provider.displayName} CLI:`,
-            error,
-          );
-
-          let errorMessage = error.message || "Unknown error";
-          if (error.stderr) {
-            errorMessage += `\nStderr: ${error.stderr}`;
-          }
-          if (error.stdout) {
-            errorMessage += `\nStdout: ${error.stdout}`;
-          }
+          debugLog("[Error] Error executing agent tool:", error);
 
           if (
-            executionTimeoutMs > 0 &&
-            (error.signal === "SIGTERM" ||
-              (error.message && error.message.includes("ETIMEDOUT")) ||
-              error.code === "ETIMEDOUT")
+            error?.code === ErrorCode.InternalError ||
+            error?.code === ErrorCode.InvalidParams ||
+            error?.code === ErrorCode.MethodNotFound
           ) {
-            throw new McpError(
-              ErrorCode.InternalError,
-              `${provider.displayName} CLI command timed out after ${formatTimeoutMs(executionTimeoutMs)}. Details: ${errorMessage}`,
-            );
+            throw error;
           }
 
           throw new McpError(
             ErrorCode.InternalError,
-            `${provider.displayName} CLI execution failed: ${errorMessage}`,
+            error.message || "Unknown agent tool error",
           );
+        } finally {
+          stopProgressHeartbeat?.();
         }
       },
     );

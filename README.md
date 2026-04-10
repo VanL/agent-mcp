@@ -5,15 +5,15 @@
 [![npm package](https://img.shields.io/npm/v/agent-mcp)](https://www.npmjs.com/package/agent-mcp)
 [![View changelog](https://img.shields.io/badge/Explore%20Changelog-brightgreen)](/CHANGELOG.md)
 
-An MCP (Model Context Protocol) server that exposes multiple agent CLIs as MCP tools and runs them in one-shot mode with provider-specific bypass flags.
+An MCP (Model Context Protocol) server that exposes a single MCP tool backed by multiple agent CLIs and runs them through one shared async job path.
 
-Did you notice that Cursor sometimes struggles with complex, multi-step edits or operations? This server exposes provider-backed MCP tools such as `claude_code`, `codex`, `gemini`, and `qwen`, making those agents directly available for coding tasks while keeping the adapter layer extensible for future CLIs.
+Did you notice that Cursor sometimes struggles with complex, multi-step edits or operations? This server exposes one provider-backed MCP tool that can target `claude_code`, `codex`, `gemini`, or `qwen`, keeping the adapter layer extensible while avoiding long synchronous calls that hit client timeouts.
 
 <img src="assets/screenshot.png" width="300" alt="Screenshot">
 
 ## Overview
 
-This MCP server provides multiple provider-backed tools that can be used by LLMs to interact with agent CLIs. When integrated with Claude Desktop or other MCP clients, it allows LLMs to:
+This MCP server provides one provider-backed tool that can be used by LLMs to interact with agent CLIs. When integrated with Claude Desktop or other MCP clients, it allows LLMs to:
 
 - Run Claude Code with `--dangerously-skip-permissions`
 - Run Codex with `codex exec --dangerously-bypass-approvals-and-sandbox`
@@ -26,7 +26,7 @@ This MCP server provides multiple provider-backed tools that can be used by LLMs
 ## Benefits
 
 - LLM clients often struggle with longer file edits, git operations, and repo workflows. This server lets them hand those jobs to purpose-built agent CLIs.
-- Claude Code, Codex, Gemini, and Qwen are available through one MCP server, so clients can switch tools without standing up separate adapters.
+- Claude Code, Codex, Gemini, and Qwen are available through one MCP tool, so clients can switch providers without standing up separate adapters.
 - Multiple commands can be queued instead of direct execution. This saves context space so more important stuff is retained longer and fewer compacts happen.
 - File ops, git, and shell work do not need your primary chat model. You can route work to the provider that fits best and keep the adapter layer extensible.
 - Agents in Agents rules.
@@ -41,7 +41,7 @@ This MCP server provides multiple provider-backed tools that can be used by LLMs
 - Gemini CLI installed locally if you want to use `gemini`
 - Qwen CLI installed locally if you want to use `qwen`
 
-When `agent-mcp` starts, it only exposes provider tools whose CLIs can be resolved to real executables. It prefers absolute paths discovered during install, then any absolute path overrides you provide in config.
+When `agent-mcp` starts, it only exposes the unified `agent` tool if at least one provider CLI can be resolved to a real executable. It prefers absolute paths discovered during install, then any absolute path overrides you provide in config.
 
 ## Configuration
 
@@ -204,61 +204,35 @@ Create this file if it doesn't exist. Add or update the configuration for your M
 
 ## Tools Provided
 
-This server exposes provider-backed tools, but only for providers whose CLI executables were found:
+This server exposes one provider-backed tool, but only if at least one provider CLI executable was found:
 
-### `claude_code`
+### `agent`
 
-Executes a prompt directly using the Claude Code CLI with `--dangerously-skip-permissions`.
-
-**Arguments:**
-
-- `prompt` (string, required): The prompt to send to Claude Code.
-- `workFolder` (string, optional): Absolute working directory to use for file, git, and shell work.
-- `timeoutMs` (integer, optional): Maximum server-side execution time in milliseconds for this request. Set to `0` to disable the timeout for this call.
-
-### `codex`
-
-Executes a prompt directly using `codex exec --dangerously-bypass-approvals-and-sandbox`.
+Runs a provider-backed coding agent through one shared async job path. The server waits for a short period in each MCP call and returns the final result if the job finishes quickly. If it is still running, it returns a `jobId` that you can pass back to the same tool to keep waiting or cancel.
 
 **Arguments:**
 
-- `prompt` (string, required): The prompt to send to Codex.
-- `workFolder` (string, optional): Absolute working directory to use for file, git, and shell work.
-- `timeoutMs` (integer, optional): Maximum server-side execution time in milliseconds for this request. Set to `0` to disable the timeout for this call.
-
-### `gemini`
-
-Executes a prompt directly using `gemini -p ... -y -o text`.
-
-**Arguments:**
-
-- `prompt` (string, required): The prompt to send to Gemini.
-- `workFolder` (string, optional): Absolute working directory to use for file, git, and shell work.
-- `timeoutMs` (integer, optional): Maximum server-side execution time in milliseconds for this request. Set to `0` to disable the timeout for this call.
-
-### `qwen`
-
-Executes a prompt directly using `qwen -p ... -y -o text`.
-
-**Arguments:**
-
-- `prompt` (string, required): The prompt to send to Qwen.
-- `workFolder` (string, optional): Absolute working directory to use for file, git, and shell work.
-- `timeoutMs` (integer, optional): Maximum server-side execution time in milliseconds for this request. Set to `0` to disable the timeout for this call.
+- `provider` (string, required when starting): One of `claude_code`, `codex`, `gemini`, or `qwen`.
+- `prompt` (string, required when starting): The prompt to send to the selected provider.
+- `workFolder` (string, optional): Absolute working directory to use for file, git, and shell work when starting a new job.
+- `timeoutMs` (integer, optional): Maximum server-side execution time in milliseconds for the provider job. Set to `0` to disable the timeout for that job.
+- `waitMs` (integer, optional): How long this MCP call should wait before returning. Defaults to `25000`.
+- `jobId` (string, optional): Existing job ID to keep waiting on or cancel. Use this instead of `provider` and `prompt`.
+- `cancel` (boolean, optional): Set to `true` together with `jobId` to cancel an existing job.
 
 **Example MCP Request:**
 
 ```json
 {
-  "toolName": "agent-mcp:claude_code",
+  "toolName": "agent-mcp:agent",
   "arguments": {
+    "provider": "codex",
     "prompt": "Refactor the function foo in main.py to be async.",
-    "timeoutMs": 0
+    "timeoutMs": 0,
+    "waitMs": 25000
   }
 }
 ```
-
-You can call the other providers the same way by switching `toolName` to `agent-mcp:codex`, `agent-mcp:gemini`, or `agent-mcp:qwen`.
 
 ### Examples
 
@@ -337,13 +311,13 @@ The server is now organized around a provider registry in [`src/server.ts`](./sr
 
 1. Add a new provider config with a `toolName`, `cliEnvVar`, and `buildInvocation` function.
 2. If the CLI needs structured output capture, add an `extractOutput` function.
-3. Add mock coverage in `src/__tests__/utils/` and extend the e2e tests with the new tool.
+3. Add mock coverage in `src/__tests__/utils/` and extend the tests for the unified `agent` tool.
 
 ## Troubleshooting
 
 - **"Command not found" (`agent-mcp`):** If installed globally, ensure the npm global bin directory is in your system's PATH. If using `npx`, ensure `npx` itself is working.
 - **"Command not found" (provider CLI):** Ensure the underlying CLI is installed correctly and that `CLAUDE_CLI_NAME`, `CODEX_CLI_NAME`, `GEMINI_CLI_NAME`, or `QWEN_CLI_NAME` points to a valid executable when overridden.
-- **Long-running jobs time out:** There are two different timeouts. `timeoutMs` and `AGENT_MCP_EXECUTION_TIMEOUT_MS` only control the server-side provider timeout. Many MCP clients also enforce their own request timeout, often around 60 seconds. `agent-mcp` now sends MCP progress heartbeats for clients that request progress, which lets progress-aware clients keep long-running calls alive. If your MCP client does not request progress or does not allow a higher request timeout, long one-shot calls can still time out in the client.
+- **Long-running jobs time out:** The provider runtime timeout and the MCP client request timeout are different. `timeoutMs` and `AGENT_MCP_EXECUTION_TIMEOUT_MS` only control the server-side provider job timeout. The unified `agent` tool now runs jobs in the background and waits only up to `waitMs` per MCP call, which avoids hard client limits on a single synchronous `tools/call`. If your client is especially strict, lower `waitMs` and keep polling with `jobId`.
 - **Permissions Issues:** Make sure you've run the "Important First-Time Setup" step.
 - **JSON Errors from Server:** If `MCP_CLAUDE_DEBUG` is `true`, error messages or logs might interfere with MCP's JSON parsing. Set to `false` for normal operation.
 - **ESM/Import Errors:** Ensure you are using Node.js v20 or later.

@@ -591,15 +591,15 @@ describe("ClaudeCodeServer Unit Tests", () => {
       const handler = listToolsCall[1];
       const result = await handler();
 
-      expect(result.tools).toHaveLength(4);
-      expect(result.tools[0].name).toBe("claude_code");
-      expect(result.tools[0].description).toContain("Claude Code Agent");
-      expect(result.tools[1].name).toBe("codex");
-      expect(result.tools[1].description).toContain("Codex Agent");
-      expect(result.tools[2].name).toBe("gemini");
-      expect(result.tools[2].description).toContain("Gemini Agent");
-      expect(result.tools[3].name).toBe("qwen");
-      expect(result.tools[3].description).toContain("Qwen Agent");
+      expect(result.tools).toHaveLength(1);
+      expect(result.tools[0].name).toBe("agent");
+      expect(result.tools[0].description).toContain("Agent Runner");
+      expect(result.tools[0].inputSchema.properties.provider.enum).toEqual([
+        "claude_code",
+        "codex",
+        "gemini",
+        "qwen",
+      ]);
     });
 
     it("should only expose providers whose CLIs can be resolved", async () => {
@@ -627,8 +627,15 @@ describe("ClaudeCodeServer Unit Tests", () => {
 
       expect(result.tools).toEqual([
         expect.objectContaining({
-          name: "codex",
-          description: expect.stringContaining("Codex Agent"),
+          name: "agent",
+          description: expect.stringContaining("codex"),
+          inputSchema: expect.objectContaining({
+            properties: expect.objectContaining({
+              provider: expect.objectContaining({
+                enum: ["codex"],
+              }),
+            }),
+          }),
         }),
       ]);
     });
@@ -690,8 +697,9 @@ describe("ClaudeCodeServer Unit Tests", () => {
       const handler = callToolCall[1];
       const promise = handler({
         params: {
-          name: "claude_code",
+          name: "agent",
           arguments: {
+            provider: "claude_code",
             prompt: "test prompt",
             workFolder: "/tmp",
           },
@@ -748,8 +756,9 @@ describe("ClaudeCodeServer Unit Tests", () => {
       try {
         const promise = handler({
           params: {
-            name: "claude_code",
+            name: "agent",
             arguments: {
+              provider: "claude_code",
               prompt: "test prompt",
               workFolder: "/tmp",
               timeoutMs: 50,
@@ -813,8 +822,9 @@ describe("ClaudeCodeServer Unit Tests", () => {
         const promise = handler(
           {
             params: {
-              name: "claude_code",
+              name: "agent",
               arguments: {
+                provider: "claude_code",
                 prompt: "test prompt",
                 workFolder: "/tmp",
                 timeoutMs: 0,
@@ -864,6 +874,85 @@ describe("ClaudeCodeServer Unit Tests", () => {
       }
     });
 
+    it("should return a job ID for long-running work and reuse it on a later poll", async () => {
+      mockHomedir.mockReturnValue("/home/user");
+      mockExistsSync.mockReturnValue(true);
+
+      setupServerMock();
+
+      const module = await import("../server.js");
+      // @ts-ignore
+      const { ClaudeCodeServer } = module;
+
+      new ClaudeCodeServer();
+      const mockServerInstance = vi.mocked(Server).mock.results[0].value;
+
+      const callToolCall = mockServerInstance.setRequestHandler.mock.calls.find(
+        (call: any[]) => call[0].name === "callTool",
+      );
+
+      expect(callToolCall).toBeDefined();
+
+      const mockProcess = new EventEmitter() as any;
+      mockProcess.stdout = new EventEmitter();
+      mockProcess.stderr = new EventEmitter();
+      mockProcess.kill = vi.fn(() => true);
+      mockProcess.stdout.on = vi.fn((event, handler) => {
+        if (event === "data") mockProcess.stdout["data"] = handler;
+      });
+      mockProcess.stderr.on = vi.fn((event, handler) => {
+        if (event === "data") mockProcess.stderr["data"] = handler;
+      });
+
+      mockSpawn.mockReturnValue(mockProcess);
+
+      const handler = callToolCall[1];
+
+      const firstResult = await handler({
+        params: {
+          name: "agent",
+          arguments: {
+            provider: "claude_code",
+            prompt: "test prompt",
+            workFolder: "/tmp",
+            waitMs: 0,
+          },
+        },
+      });
+
+      expect(firstResult.content[0].text).toContain("is still running");
+
+      const jobIdMatch = firstResult.content[0].text.match(
+        /Job ([a-f0-9-]+) is still running/i,
+      );
+      expect(jobIdMatch).toBeDefined();
+
+      const jobId = jobIdMatch![1];
+
+      vi.useFakeTimers();
+
+      try {
+        const secondPromise = handler({
+          params: {
+            name: "agent",
+            arguments: {
+              jobId,
+              waitMs: 100,
+            },
+          },
+        });
+
+        mockProcess.stdout["data"]("tool output");
+        await vi.advanceTimersByTimeAsync(50);
+        mockProcess.emit("close", 0);
+
+        const secondResult = await secondPromise;
+        expect(secondResult.content[0].text).toBe("tool output");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("should handle non-existent workFolder", async () => {
       mockHomedir.mockReturnValue("/home/user");
       mockExistsSync.mockImplementation((path) => {
@@ -902,8 +991,9 @@ describe("ClaudeCodeServer Unit Tests", () => {
 
       const promise = handler({
         params: {
-          name: "claude_code",
+          name: "agent",
           arguments: {
+            provider: "claude_code",
             prompt: "test",
             workFolder: "/nonexistent",
           },

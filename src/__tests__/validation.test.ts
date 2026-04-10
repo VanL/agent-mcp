@@ -206,8 +206,9 @@ describe("Argument Validation Tests", () => {
       await expect(
         handler({
           params: {
-            name: "claude_code",
+            name: "agent",
             arguments: {
+              provider: "claude_code",
               prompt: "test",
               workFolder: 123, // Invalid type
             },
@@ -236,8 +237,9 @@ describe("Argument Validation Tests", () => {
       await expect(
         handler({
           params: {
-            name: "claude_code",
+            name: "agent",
             arguments: {
+              provider: "claude_code",
               prompt: "test",
               timeoutMs: -1,
             },
@@ -277,8 +279,9 @@ describe("Argument Validation Tests", () => {
 
       await handler({
         params: {
-          name: "claude_code",
+          name: "agent",
           arguments: {
+            provider: "claude_code",
             prompt: "", // Empty prompt
           },
         },

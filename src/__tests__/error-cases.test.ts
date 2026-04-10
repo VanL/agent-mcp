@@ -148,8 +148,9 @@ describe("Error Handling Tests", () => {
       try {
         await callToolHandler({
           params: {
-            name: "claude_code",
+            name: "agent",
             arguments: {
+              provider: "claude_code",
               prompt: "test",
               workFolder: "/tmp",
             },
@@ -185,7 +186,7 @@ describe("Error Handling Tests", () => {
       await expect(
         handler({
           params: {
-            name: "claude_code",
+            name: "agent",
             arguments: "invalid-should-be-object",
           },
         }),
@@ -244,8 +245,9 @@ describe("Error Handling Tests", () => {
       await expect(
         handler({
           params: {
-            name: "claude_code",
+            name: "agent",
             arguments: {
+              provider: "claude_code",
               prompt: "test",
               workFolder: "/tmp",
             },
