@@ -801,7 +801,7 @@ const claudeProvider = {
     buildInvocation: ({ prompt }) => {
         const args = ["--dangerously-skip-permissions"];
         if (isMinimalModeEnabled(claudeMinimalModeEnvVar)) {
-            args.push("--bare", "--strict-mcp-config");
+            args.push("--strict-mcp-config");
         }
         args.push("-p", prompt);
         return {
