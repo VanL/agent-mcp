@@ -84,6 +84,10 @@ When `agent-mcp` starts, it only exposes the unified `agent` tool if at least on
 
 - `AGENT_MCP_EXECUTION_TIMEOUT_MS`: Default server-side timeout for provider CLI executions in milliseconds (default: `300000`, or 5 minutes). Set to `0` to disable the adapter timeout entirely for long-running jobs.
 
+- `AGENT_MCP_CLAUDE_MINIMAL_MODE`, `AGENT_MCP_CODEX_MINIMAL_MODE`, `AGENT_MCP_GEMINI_MINIMAL_MODE`, `AGENT_MCP_OPENCODE_MINIMAL_MODE`, `AGENT_MCP_QWEN_MINIMAL_MODE`: Control whether `agent-mcp` runs each provider in a minimal provider-local mode by default. The default is `true` for all of them. Set any of these to `false` to preserve the provider's normal user-level config for that provider.
+
+- `AGENT_MCP_CODEX_ALLOWED_MCP_SERVERS`: Optional comma-separated allowlist of Codex MCP server names to keep enabled while Codex minimal mode is on. By default, `agent-mcp` disables all Codex MCP servers declared in `~/.codex/config.toml` for delegated runs.
+
 - `MCP_CLAUDE_DEBUG`: Enable verbose debug logging for the server and all configured providers.
 
 ## Installation & Usage
@@ -225,6 +229,8 @@ This server exposes one provider-backed tool, but only if at least one provider 
 ### `agent`
 
 Runs a provider-backed coding agent through one shared async job path. The server waits for a short period in each MCP call and returns the final result if the job finishes quickly. If it is still running, it returns a `jobId` that you can pass back to the same tool to keep waiting or cancel.
+
+By default, providers are launched in a minimal provider-local mode to avoid inherited MCP, plugin, or extension startup from the main user profile. This keeps delegated runs focused on the requested task and reduces timeout risk from unrelated provider bootstrapping.
 
 **Arguments:**
 
@@ -377,6 +383,8 @@ The server's behavior can be customized using these environment variables:
 - `CLAUDE_CLI_NAME`, `CODEX_CLI_NAME`, `GEMINI_CLI_NAME`, `OPENCODE_CLI_NAME`, `QWEN_CLI_NAME`: Override the executable name or provide an absolute path for each provider CLI.
 - `OPENCODE_MODEL`: Set the default OpenCode model override in `provider/model` form.
 - `AGENT_MCP_EXECUTION_TIMEOUT_MS`: Set the default server-side execution timeout in milliseconds for all provider tool calls. Use `0` to disable the adapter timeout.
+- `AGENT_MCP_CLAUDE_MINIMAL_MODE`, `AGENT_MCP_CODEX_MINIMAL_MODE`, `AGENT_MCP_GEMINI_MINIMAL_MODE`, `AGENT_MCP_OPENCODE_MINIMAL_MODE`, `AGENT_MCP_QWEN_MINIMAL_MODE`: Set any of these to `false` if you want a provider to keep its normal user-level config during delegated runs.
+- `AGENT_MCP_CODEX_ALLOWED_MCP_SERVERS`: Comma-separated allowlist of Codex MCP server names to keep enabled while Codex minimal mode stays on.
 - `MCP_CLAUDE_DEBUG`: Set to `true` for verbose debug logging from this MCP server. Default: `false`.
 - Provider-specific auth variables such as `GEMINI_API_KEY` or `OPENROUTER_API_KEY` should be passed through the MCP server environment when the underlying CLI requires them.
 

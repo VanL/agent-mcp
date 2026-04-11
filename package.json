@@ -1,6 +1,6 @@
 {
   "name": "agent-mcp",
-  "version": "1.10.16",
+  "version": "1.10.17",
   "description": "Provider-backed MCP server for Claude Code, Codex, Gemini, OpenCode, Qwen, and future agent CLIs",
   "author": "Peter Steinberger",
   "license": "MIT",

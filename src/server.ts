@@ -11,11 +11,14 @@ import {
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
+  copyFileSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
   rmSync,
+  writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve as pathResolve } from "node:path";
@@ -24,7 +27,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
 
 // Server version - update this when releasing new versions
-const SERVER_VERSION = "1.10.16";
+const SERVER_VERSION = "1.10.17";
 
 const debugMode = process.env.MCP_CLAUDE_DEBUG === "true";
 let isFirstToolUse = true;
@@ -39,6 +42,17 @@ const unifiedToolTitle = "Agent Runner";
 const opencodeModelEnvVar = "OPENCODE_MODEL";
 const opencodeProbePrompt = "Reply with exactly OK.";
 const opencodeProbeTimeoutMs = 2500;
+const claudeMinimalModeEnvVar = "AGENT_MCP_CLAUDE_MINIMAL_MODE";
+const codexMinimalModeEnvVar = "AGENT_MCP_CODEX_MINIMAL_MODE";
+const codexAllowedMcpServersEnvVar = "AGENT_MCP_CODEX_ALLOWED_MCP_SERVERS";
+const geminiMinimalModeEnvVar = "AGENT_MCP_GEMINI_MINIMAL_MODE";
+const opencodeMinimalModeEnvVar = "AGENT_MCP_OPENCODE_MINIMAL_MODE";
+const qwenMinimalModeEnvVar = "AGENT_MCP_QWEN_MINIMAL_MODE";
+const geminiAuthFiles = [
+  "google_accounts.json",
+  "installation_id",
+  "state.json",
+];
 
 const workFolderDescription =
   "Mandatory when using file operations or referencing any file. The working directory for the CLI execution. Must be an absolute path.";
@@ -157,6 +171,7 @@ interface ProviderInvocation {
   args: string[];
   outputFile?: string;
   cleanupDir?: string;
+  env?: NodeJS.ProcessEnv;
   invocationMode?: ProviderInvocationMode;
   resolvedModel?: string;
 }
@@ -382,6 +397,7 @@ Available providers:
 ${providerList}
 
 This tool uses one job-backed execution path for every provider.
+Providers run in a minimal provider-local mode by default to avoid inherited MCP/plugin startup from the caller's normal user config.
 
 How to use it:
 1. Start a job with \`provider\` and \`prompt\`.
@@ -453,6 +469,211 @@ function formatTimeoutMs(timeoutMs: number): string {
   }
 
   return `${timeoutMs}ms`;
+}
+
+function parseBooleanEnv(
+  rawValue: string | undefined,
+  defaultValue: boolean,
+): boolean {
+  if (typeof rawValue !== "string") {
+    return defaultValue;
+  }
+
+  const normalizedValue = rawValue.trim().toLowerCase();
+  if (normalizedValue.length === 0) {
+    return defaultValue;
+  }
+
+  if (["1", "true", "yes", "on"].includes(normalizedValue)) {
+    return true;
+  }
+
+  if (["0", "false", "no", "off"].includes(normalizedValue)) {
+    return false;
+  }
+
+  console.warn(
+    `[Warning] Ignoring invalid boolean env value "${rawValue}". Expected one of: true/false, 1/0, yes/no, on/off.`,
+  );
+  return defaultValue;
+}
+
+function isMinimalModeEnabled(envVar: string): boolean {
+  return parseBooleanEnv(process.env[envVar], true);
+}
+
+function parseCsvEnv(rawValue: string | undefined): string[] {
+  if (typeof rawValue !== "string") {
+    return [];
+  }
+
+  return rawValue
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+}
+
+function readJsonFile<T>(filePath: string): T | null {
+  if (!existsSync(filePath)) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(readFileSync(filePath, "utf-8")) as T;
+  } catch (error) {
+    debugLog(`[Debug] Failed to parse JSON from ${filePath}:`, error);
+    return null;
+  }
+}
+
+function getConfiguredCodexMcpServerNames(): string[] {
+  const configPath = join(homedir(), ".codex", "config.toml");
+  if (!existsSync(configPath)) {
+    return [];
+  }
+
+  try {
+    const contents = readFileSync(configPath, "utf-8");
+    const serverNames = new Set<string>();
+    const sectionPattern =
+      /^\s*\[mcp_servers\.("([^"]+)"|([A-Za-z0-9_-]+))\]\s*$/gm;
+
+    for (const match of contents.matchAll(sectionPattern)) {
+      const serverName = match[2] ?? match[3];
+      if (serverName && serverName.length > 0) {
+        serverNames.add(serverName);
+      }
+    }
+
+    return [...serverNames];
+  } catch (error) {
+    debugLog("[Debug] Failed to read Codex MCP server config:", error);
+    return [];
+  }
+}
+
+function buildCodexMinimalConfigArgs(): string[] {
+  if (!isMinimalModeEnabled(codexMinimalModeEnvVar)) {
+    return [];
+  }
+
+  const allowedServers = new Set(
+    parseCsvEnv(process.env[codexAllowedMcpServersEnvVar]).map((entry) =>
+      entry.toLowerCase(),
+    ),
+  );
+  const configuredServerNames = getConfiguredCodexMcpServerNames();
+
+  return configuredServerNames.flatMap((serverName) => {
+    if (!/^[A-Za-z0-9_-]+$/.test(serverName)) {
+      console.warn(
+        `[Warning] Skipping Codex MCP override for unsupported server name "${serverName}".`,
+      );
+      return [];
+    }
+
+    if (allowedServers.has(serverName.toLowerCase())) {
+      return [];
+    }
+
+    return ["-c", `mcp_servers.${serverName}.enabled=false`];
+  });
+}
+
+function resolveGeminiSelectedAuthType(): string | undefined {
+  const hasGeminiApiKey =
+    typeof process.env.GEMINI_API_KEY === "string" &&
+    process.env.GEMINI_API_KEY.trim().length > 0;
+
+  if (hasGeminiApiKey) {
+    return "gemini-api-key";
+  }
+
+  const settingsPath = join(homedir(), ".gemini", "settings.json");
+  const settings = readJsonFile<{
+    security?: {
+      auth?: {
+        selectedType?: string;
+      };
+    };
+  }>(settingsPath);
+
+  const selectedType = settings?.security?.auth?.selectedType?.trim();
+  return selectedType && selectedType.length > 0 ? selectedType : undefined;
+}
+
+function buildGeminiMinimalInvocationEnvironment(): Pick<
+  ProviderInvocation,
+  "cleanupDir" | "env"
+> {
+  const cleanupDir = mkdtempSync(join(tmpdir(), "agent-mcp-gemini-home-"));
+  const geminiHome = join(cleanupDir, ".gemini");
+  mkdirSync(join(geminiHome, "history"), { recursive: true });
+  mkdirSync(join(geminiHome, "tmp"), { recursive: true });
+
+  const selectedType = resolveGeminiSelectedAuthType();
+  const settings = {
+    ...(selectedType
+      ? {
+          security: {
+            auth: {
+              selectedType,
+            },
+          },
+        }
+      : {}),
+    admin: {
+      mcp: { enabled: false },
+      extensions: { enabled: false },
+      skills: { enabled: false },
+    },
+    hooks: {},
+    ui: {
+      hideBanner: true,
+      showHomeDirectoryWarning: false,
+    },
+  };
+
+  writeFileSync(
+    join(geminiHome, "settings.json"),
+    `${JSON.stringify(settings, null, 2)}\n`,
+    "utf-8",
+  );
+  writeFileSync(
+    join(geminiHome, "projects.json"),
+    `${JSON.stringify({ projects: {} }, null, 2)}\n`,
+    "utf-8",
+  );
+  writeFileSync(
+    join(geminiHome, "trustedFolders.json"),
+    `${JSON.stringify({}, null, 2)}\n`,
+    "utf-8",
+  );
+
+  const currentGeminiHome = join(homedir(), ".gemini");
+  for (const fileName of geminiAuthFiles) {
+    const sourcePath = join(currentGeminiHome, fileName);
+    if (!existsSync(sourcePath)) {
+      continue;
+    }
+
+    try {
+      copyFileSync(sourcePath, join(geminiHome, fileName));
+    } catch (error) {
+      debugLog(`[Debug] Failed to copy Gemini auth file ${fileName}:`, error);
+    }
+  }
+
+  const env = {
+    ...process.env,
+    HOME: cleanupDir,
+    USERPROFILE: cleanupDir,
+  };
+
+  return {
+    cleanupDir,
+    env,
+  };
 }
 
 function startProgressHeartbeat(
@@ -917,6 +1138,10 @@ function buildOpencodeInvocation(
     cwd,
   ];
 
+  if (isMinimalModeEnabled(opencodeMinimalModeEnvVar)) {
+    args.push("--pure");
+  }
+
   if (modelOverride.length > 0) {
     args.push("--model", modelOverride);
   }
@@ -1015,10 +1240,20 @@ const claudeProvider: AgentProviderConfig = {
   warnWhenFallingBackToPath: true,
   promptDescription:
     "The detailed natural language prompt for Claude to execute.",
-  buildInvocation: ({ prompt }) => ({
-    args: ["--dangerously-skip-permissions", "-p", prompt],
-    invocationMode: "default",
-  }),
+  buildInvocation: ({ prompt }) => {
+    const args = ["--dangerously-skip-permissions"];
+
+    if (isMinimalModeEnabled(claudeMinimalModeEnvVar)) {
+      args.push("--bare", "--strict-mcp-config");
+    }
+
+    args.push("-p", prompt);
+
+    return {
+      args,
+      invocationMode: "default",
+    };
+  },
 };
 
 const codexProvider: AgentProviderConfig = {
@@ -1034,10 +1269,12 @@ const codexProvider: AgentProviderConfig = {
   buildInvocation: ({ prompt, cwd }) => {
     const cleanupDir = mkdtempSync(join(tmpdir(), "codex-mcp-"));
     const outputFile = join(cleanupDir, "last-message.txt");
+    const minimalConfigArgs = buildCodexMinimalConfigArgs();
 
     return {
       args: [
         "exec",
+        ...minimalConfigArgs,
         "--dangerously-bypass-approvals-and-sandbox",
         "--skip-git-repo-check",
         "--color",
@@ -1077,6 +1314,10 @@ const geminiProvider: AgentProviderConfig = {
     "The detailed natural language prompt for Gemini to execute.",
   buildInvocation: ({ prompt, model }) => {
     const args = ["-p", prompt, "-y", "-o", "text"];
+    const minimalInvocation = isMinimalModeEnabled(geminiMinimalModeEnvVar)
+      ? buildGeminiMinimalInvocationEnvironment()
+      : {};
+
     if (model) {
       args.unshift(model);
       args.unshift("-m");
@@ -1084,6 +1325,7 @@ const geminiProvider: AgentProviderConfig = {
 
     return {
       args,
+      ...minimalInvocation,
       invocationMode: "default",
       resolvedModel: model,
     };
@@ -1100,10 +1342,18 @@ const qwenProvider: AgentProviderConfig = {
   defaultCliCommand: "qwen",
   promptDescription:
     "The detailed natural language prompt for Qwen to execute.",
-  buildInvocation: ({ prompt }) => ({
-    args: ["-p", prompt, "-y", "-o", "text"],
-    invocationMode: "default",
-  }),
+  buildInvocation: ({ prompt }) => {
+    const args = ["-p", prompt, "-y", "-o", "text"];
+
+    if (isMinimalModeEnabled(qwenMinimalModeEnvVar)) {
+      args.push("--extensions=", "--allowed-mcp-server-names=");
+    }
+
+    return {
+      args,
+      invocationMode: "default",
+    };
+  },
 };
 
 const opencodeProvider: AgentProviderConfig = {
@@ -1522,6 +1772,7 @@ export class AgentCliServer {
     const childProcess = spawn(provider.cliCommand, executionArgs, {
       shell: false,
       cwd,
+      env: invocation.env ?? process.env,
       stdio: ["ignore", "pipe", "pipe"],
       detached: process.platform !== "win32",
     });
@@ -1866,14 +2117,7 @@ export class AgentCliServer {
                 description: cancelDescription,
               },
             },
-            anyOf: [
-              {
-                required: ["provider", "prompt"],
-              },
-              {
-                required: ["jobId"],
-              },
-            ],
+            required: [],
           },
         },
       ],
